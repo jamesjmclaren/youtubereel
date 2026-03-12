@@ -1,0 +1,23 @@
+{
+  "name": "youtubereel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env --import tsx/esm src/index.ts",
+    "scrape": "node --env-file=.env --import tsx/esm src/scraper.ts",
+    "generate-image": "node --env-file=.env --import tsx/esm src/image-generator.ts",
+    "render-video": "node --env-file=.env --import tsx/esm src/video-renderer.ts",
+    "upload": "node --env-file=.env --import tsx/esm src/uploader.ts"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.65",
+    "cheerio": "^1.0.0",
+    "googleapis": "^146.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}

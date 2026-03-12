@@ -1,0 +1,131 @@
+import { mkdir, writeFile, readdir } from "fs/promises";
+import { scrapeTopCards, downloadCardImages } from "./scraper.js";
+import { generateImage } from "./image-generator.js";
+import { renderVideo } from "./video-renderer.js";
+import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
+import { CONTENT_PRESETS, getPresetForToday } from "./presets.js";
+import type { PipelineConfig, ContentPreset } from "./types.js";
+
+async function run(
+  config: PipelineConfig,
+  preset: ContentPreset | null,
+  skipUpload = false
+) {
+  const timestamp = new Date().toISOString().slice(0, 10);
+  const presetName = preset?.name || "custom";
+  const runDir = `${config.outputDir}/${timestamp}-${presetName}`;
+  await mkdir(runDir, { recursive: true });
+
+  // Step 1: Scrape
+  console.log("\n━━━ Step 1: Scraping cards ━━━");
+  let cards = await scrapeTopCards(config);
+  if (cards.length === 0) {
+    console.error("No cards found. Aborting.");
+    process.exit(1);
+  }
+  console.log(`Found ${cards.length} cards`);
+
+  // Step 2: Download images
+  console.log("\n━━━ Step 2: Downloading card images ━━━");
+  cards = await downloadCardImages(cards, `${runDir}/images`);
+  await writeFile(`${runDir}/cards.json`, JSON.stringify(cards, null, 2));
+
+  // Step 3: Generate image
+  console.log("\n━━━ Step 3: Generating thumbnail ━━━");
+  const imagePath = `${runDir}/thumbnail.png`;
+  await generateImage(cards, imagePath, {
+    period: config.period,
+    theme: preset?.theme || "indigo",
+    title: preset?.title,
+    subtitle: preset?.subtitle,
+  });
+
+  // Step 4: Render video
+  console.log("\n━━━ Step 4: Rendering video ━━━");
+  const videoPath = `${runDir}/short.mp4`;
+  let musicPath = "assets/music.mp3";
+  try {
+    const assetFiles = await readdir("assets");
+    const mp3s = assetFiles.filter((f) => f.endsWith(".mp3"));
+    if (mp3s.length > 0) {
+      const pick = mp3s[Math.floor(Math.random() * mp3s.length)];
+      musicPath = `assets/${pick}`;
+      console.log(`Using music: ${pick}`);
+    }
+  } catch { /* use default */ }
+  await renderVideo(imagePath, videoPath, musicPath);
+
+  // Step 5: Upload
+  if (!skipUpload) {
+    console.log("\n━━━ Step 5: Uploading to YouTube ━━━");
+    const url = await uploadToYouTube(videoPath, cards, config.period);
+    console.log(`\n✅ Done! Video live at: ${url}`);
+  } else {
+    console.log("\n━━━ Step 5: Skipped upload (--no-upload) ━━━");
+    console.log(`\n✅ Done! Output in: ${runDir}/`);
+    console.log(`   📊 Cards data: ${runDir}/cards.json`);
+    console.log(`   🖼️  Thumbnail: ${runDir}/thumbnail.png`);
+    console.log(`   🎬 Video:     ${runDir}/short.mp4`);
+  }
+}
+
+// CLI
+const args = process.argv.slice(2);
+
+if (args.includes("--auth")) {
+  console.log("Visit this URL to authorize YouTube uploads:\n");
+  console.log(getAuthUrl());
+  console.log("\nThen run: npm start -- --code YOUR_CODE");
+} else if (args.includes("--code")) {
+  const codeIndex = args.indexOf("--code") + 1;
+  await exchangeCode(args[codeIndex]);
+} else if (args.includes("--list-presets")) {
+  console.log("Available presets:\n");
+  for (const p of CONTENT_PRESETS) {
+    console.log(`  ${p.name}`);
+    console.log(`    ${p.title} — ${p.subtitle}`);
+    console.log(`    ${p.direction} | ${p.period} | price: ${p.priceFilter || "all"} | top ${p.topN} | theme: ${p.theme}\n`);
+  }
+  const today = getPresetForToday();
+  console.log(`Today's auto-pick: ${today.name}`);
+} else {
+  const skipUpload = args.includes("--no-upload");
+
+  // Use a specific preset, or auto-rotate
+  const presetArg = args.find((a) => a.startsWith("--preset="));
+  let preset: ContentPreset;
+
+  if (presetArg) {
+    const name = presetArg.split("=")[1];
+    const found = CONTENT_PRESETS.find((p) => p.name === name);
+    if (!found) {
+      console.error(`Unknown preset: ${name}. Run --list-presets to see options.`);
+      process.exit(1);
+    }
+    preset = found;
+  } else {
+    preset = getPresetForToday();
+  }
+
+  // Allow CLI overrides
+  const config: PipelineConfig = {
+    period: preset.period,
+    priceFilter: preset.priceFilter,
+    topN: preset.topN,
+    outputDir: "output",
+    direction: preset.direction,
+  };
+
+  const periodArg = args.find((a) => a.startsWith("--period="));
+  if (periodArg) config.period = periodArg.split("=")[1] as PipelineConfig["period"];
+  const topArg = args.find((a) => a.startsWith("--top="));
+  if (topArg) config.topN = parseInt(topArg.split("=")[1]);
+
+  console.log("🎬 YouTube Shorts Pipeline");
+  console.log(`   Preset: ${preset.name}`);
+  console.log(`   Title:  ${preset.title}`);
+  console.log(`   ${config.direction} | ${config.period} | price: ${config.priceFilter || "all"} | top ${config.topN} | theme: ${preset.theme}`);
+  console.log(`   Upload: ${!skipUpload}`);
+
+  await run(config, preset, skipUpload);
+}

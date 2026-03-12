@@ -1,0 +1,72 @@
+name: Daily YouTube Short
+
+on:
+  schedule:
+    # Runs daily at 10:00 UTC
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Content preset (leave empty for auto-rotate)"
+        required: false
+        type: choice
+        options:
+          - ""
+          - weekly-movers-premium
+          - monthly-movers-premium
+          - weekly-biggest-drops
+          - budget-movers
+          - daily-hot
+          - monthly-drops
+          - weekly-movers-all
+      skip_upload:
+        description: "Skip YouTube upload (dry run)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write YouTube tokens
+        run: echo '${{ secrets.YOUTUBE_TOKENS }}' > tokens.json
+
+      - name: Write .env
+        run: |
+          echo "YOUTUBE_CLIENT_ID=${{ secrets.YOUTUBE_CLIENT_ID }}" > .env
+          echo "YOUTUBE_CLIENT_SECRET=${{ secrets.YOUTUBE_CLIENT_SECRET }}" >> .env
+
+      - name: Run pipeline
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.preset }}" ]; then
+            ARGS="--preset=${{ inputs.preset }}"
+          fi
+          if [ "${{ inputs.skip_upload }}" = "true" ]; then
+            ARGS="$ARGS --no-upload"
+          fi
+          node --env-file=.env --import tsx/esm src/index.ts $ARGS
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: short-${{ github.run_id }}
+          path: output/
+          retention-days: 7
