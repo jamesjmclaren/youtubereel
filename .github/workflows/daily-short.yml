@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       preset:
-        description: "Content preset (leave empty for auto-rotate)"
+        description: "Content preset (auto = auto-rotate)"
         required: false
         type: choice
         options:
-          - ""
+          - auto
           - weekly-movers-premium
           - monthly-movers-premium
           - weekly-biggest-drops
@@ -45,20 +45,28 @@ jobs:
         run: npm ci
 
       - name: Write YouTube tokens
-        run: echo '${{ secrets.YOUTUBE_TOKENS }}' > tokens.json
+        env:
+          YOUTUBE_TOKENS: ${{ secrets.YOUTUBE_TOKENS }}
+        run: printenv YOUTUBE_TOKENS > tokens.json
 
       - name: Write .env
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
         run: |
-          echo "YOUTUBE_CLIENT_ID=${{ secrets.YOUTUBE_CLIENT_ID }}" > .env
-          echo "YOUTUBE_CLIENT_SECRET=${{ secrets.YOUTUBE_CLIENT_SECRET }}" >> .env
+          echo "YOUTUBE_CLIENT_ID=${YOUTUBE_CLIENT_ID}" > .env
+          echo "YOUTUBE_CLIENT_SECRET=${YOUTUBE_CLIENT_SECRET}" >> .env
 
       - name: Run pipeline
+        env:
+          INPUT_PRESET: ${{ inputs.preset }}
+          INPUT_SKIP_UPLOAD: ${{ inputs.skip_upload }}
         run: |
           ARGS=""
-          if [ -n "${{ inputs.preset }}" ]; then
-            ARGS="--preset=${{ inputs.preset }}"
+          if [ -n "$INPUT_PRESET" ] && [ "$INPUT_PRESET" != "auto" ]; then
+            ARGS="--preset=$INPUT_PRESET"
           fi
-          if [ "${{ inputs.skip_upload }}" = "true" ]; then
+          if [ "$INPUT_SKIP_UPLOAD" = "true" ]; then
             ARGS="$ARGS --no-upload"
           fi
           node --env-file=.env --import tsx/esm src/index.ts $ARGS
