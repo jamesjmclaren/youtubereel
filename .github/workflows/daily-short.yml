@@ -28,7 +28,7 @@ on:
 jobs:
   generate-and-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +38,7 @@ jobs:
           node-version: "22"
           cache: "npm"
 
-      - name: Install FFmpeg
+      - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install dependencies

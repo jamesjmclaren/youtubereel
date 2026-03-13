@@ -12,8 +12,8 @@
   },
   "dependencies": {
     "@napi-rs/canvas": "^0.1.65",
-    "cheerio": "^1.0.0",
-    "googleapis": "^146.0.0"
+    "googleapis": "^146.0.0",
+    "puppeteer": "^24.39.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
