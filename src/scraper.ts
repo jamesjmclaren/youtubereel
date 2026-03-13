@@ -1,10 +1,7 @@
-import * as cheerio from "cheerio";
+import puppeteer from "puppeteer";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 import type { CardData, PipelineConfig } from "./types.js";
-
-const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const PERIOD_MAP: Record<PipelineConfig["period"], string> = {
   "24h": "1d",
@@ -12,29 +9,6 @@ const PERIOD_MAP: Record<PipelineConfig["period"], string> = {
   "30d": "30d",
   "90d": "90d",
 };
-
-interface JsonLdItem {
-  "@type": "ListItem";
-  position: number;
-  item: {
-    "@type": "Product";
-    name: string;
-    image?: string;
-    offers?: {
-      price: string;
-      url: string;
-    };
-    additionalProperty?: {
-      name: string;
-      value: string;
-    };
-  };
-}
-
-interface JsonLdData {
-  "@type": "ItemList";
-  itemListElement: JsonLdItem[];
-}
 
 export async function scrapeTopCards(
   config: Pick<PipelineConfig, "period" | "priceFilter" | "topN" | "direction">
@@ -46,102 +20,119 @@ export async function scrapeTopCards(
 
   console.log(`[scraper] Fetching: ${url}`);
 
-  const res = await fetch(url, { headers: { "User-Agent": UA } });
-  if (!res.ok) {
-    throw new Error(`Failed to fetch TCG Market News: ${res.status}`);
-  }
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
 
-  const html = await res.text();
-  const $ = cheerio.load(html);
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
 
-  // 1. Parse JSON-LD for card metadata (names, images, rarity, TCGPlayer URLs)
-  let jsonLdItems: JsonLdItem[] = [];
-  $('script[type="application/ld+json"]').each((_, el) => {
+    await page.goto(url, { waitUntil: "networkidle2", timeout: 30_000 });
+
+    // Wait for card elements to render (try multiple possible selectors)
     try {
-      const jsonLd = JSON.parse($(el).text());
-      if (jsonLd["@type"] === "ItemList" && Array.isArray(jsonLd.itemListElement)) {
-        jsonLdItems = jsonLd.itemListElement;
-      }
+      await page.waitForSelector(
+        ".gainer-card, .loser-card, .mover-card, [data-product-id-card]",
+        { timeout: 10_000 }
+      );
     } catch {
-      // skip non-matching JSON-LD blocks
+      // Dump page content for debugging
+      const bodyText = await page.evaluate(() =>
+        document.body.innerText.slice(0, 500)
+      );
+      console.warn(`[scraper] No card elements found after waiting. Page preview: ${bodyText}`);
     }
-  });
-  if (jsonLdItems.length === 0) {
-    console.warn("[scraper] No ItemList found in JSON-LD");
+
+    // Extract card data from the rendered page
+    const cards = await page.evaluate((opts) => {
+      const { topN, direction } = opts;
+      const results: Array<{
+        rank: number;
+        name: string;
+        number: string;
+        setName: string;
+        rarity: string;
+        type: string;
+        price: number;
+        dollarChange: number;
+        percentChange: number;
+        tcgPlayerUrl: string;
+        imageUrl?: string;
+      }> = [];
+
+      // Try multiple selectors for card elements
+      const cardEls = document.querySelectorAll(
+        ".gainer-card, .loser-card, .mover-card, [data-product-id-card]"
+      );
+
+      // Also parse JSON-LD if available
+      type JsonLdItem = {
+        item: {
+          name?: string;
+          image?: string;
+          offers?: { url?: string };
+          additionalProperty?: { value?: string };
+        };
+      };
+      let jsonLdItems: JsonLdItem[] = [];
+      document.querySelectorAll('script[type="application/ld+json"]').forEach((el) => {
+        try {
+          const data = JSON.parse(el.textContent || "");
+          if (data["@type"] === "ItemList" && Array.isArray(data.itemListElement)) {
+            jsonLdItems = data.itemListElement;
+          }
+        } catch { /* skip */ }
+      });
+
+      const limit = Math.min(topN, cardEls.length);
+      for (let i = 0; i < limit; i++) {
+        const el = cardEls[i] as HTMLElement;
+        const productId = el.getAttribute("data-product-id-card") || "";
+        const subType = el.getAttribute("data-sub-type") || "Holofoil";
+        const price = parseFloat(el.getAttribute("data-current-price") || "0");
+        const changeAmount = parseFloat(el.getAttribute("data-price-change-amount") || "0");
+        const changePct = parseFloat(el.getAttribute("data-price-change-percentage") || "0");
+
+        const setName = el.querySelector(".group-link")?.textContent?.trim() || "";
+        const badges = el.querySelectorAll(".card-details-badge span");
+        const cardNumber = badges.length > 1 ? (badges[1]?.textContent?.trim() || "") : "";
+
+        const jsonLdItem = jsonLdItems[i]?.item;
+        const fullName = jsonLdItem?.name || `Card #${productId}`;
+        const nameParts = fullName.split(" - ");
+        const cardName = nameParts[0].trim();
+        const number = cardNumber || nameParts[1]?.trim() || "";
+        const imageUrl = jsonLdItem?.image?.replace("_200w", "_400w");
+        const rarity = jsonLdItem?.additionalProperty?.value || "";
+        const tcgPlayerUrl = jsonLdItem?.offers?.url || "";
+
+        results.push({
+          rank: i + 1,
+          name: cardName,
+          number,
+          setName,
+          rarity,
+          type: subType,
+          price,
+          dollarChange: direction === "losers" ? -Math.abs(changeAmount) : changeAmount,
+          percentChange: direction === "losers" ? -Math.abs(changePct) : changePct,
+          tcgPlayerUrl,
+          imageUrl,
+        });
+      }
+
+      return results;
+    }, { topN: config.topN, direction });
+
+    console.log(`[scraper] Found ${cards.length} cards`);
+    return cards;
+  } finally {
+    await browser.close();
   }
-
-  // 2. Parse HTML data attributes for price change data
-  const htmlCards: Array<{
-    productId: string;
-    subType: string;
-    price: number;
-    changeAmount: number;
-    changePct: number;
-    setName: string;
-    cardNumber: string;
-  }> = [];
-
-  // Try multiple selectors: class-based (legacy) and data-attribute-based (resilient)
-  const cardEls = $(".gainer-card, .loser-card, .mover-card, [data-product-id-card]");
-  console.log(`[scraper] Found ${cardEls.length} card elements in HTML`);
-
-  if (cardEls.length === 0) {
-    // Dump page structure for debugging
-    const bodyText = $("body").text().slice(0, 500).replace(/\s+/g, " ").trim();
-    console.warn(`[scraper] Page body preview: ${bodyText}`);
-  }
-
-  cardEls.each((_, el) => {
-    const $el = $(el);
-    const productId = $el.attr("data-product-id-card") || "";
-    const subType = $el.attr("data-sub-type") || "Holofoil";
-    const price = parseFloat($el.attr("data-current-price") || "0");
-    const changeAmount = parseFloat($el.attr("data-price-change-amount") || "0");
-    const changePct = parseFloat($el.attr("data-price-change-percentage") || "0");
-
-    // Extract set name from the group-link inside this card
-    const setName = $el.find(".group-link").text().trim();
-    // Extract card number from the details badge
-    const badges = $el.find(".card-details-badge span");
-    const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
-
-    htmlCards.push({ productId, subType, price, changeAmount, changePct, setName, cardNumber });
-  });
-
-  // 3. Merge JSON-LD + HTML data, taking the top N
-  const cards: CardData[] = [];
-
-  for (let i = 0; i < Math.min(config.topN, htmlCards.length); i++) {
-    const htmlCard = htmlCards[i];
-    const jsonLdItem = jsonLdItems[i]?.item;
-
-    const name = jsonLdItem?.name || `Card #${htmlCard.productId}`;
-    const nameParts = name.split(" - ");
-    const cardName = nameParts[0].trim();
-    const number = htmlCard.cardNumber || nameParts[1]?.trim() || "";
-
-    // Get higher-res image from TCGPlayer CDN (replace _200w with _400w)
-    const imageUrl = jsonLdItem?.image?.replace("_200w", "_400w");
-    const rarity = jsonLdItem?.additionalProperty?.value || "";
-    const tcgPlayerUrl = jsonLdItem?.offers?.url || "";
-
-    cards.push({
-      rank: i + 1,
-      name: cardName,
-      number,
-      setName: htmlCard.setName,
-      rarity,
-      type: htmlCard.subType,
-      price: htmlCard.price,
-      dollarChange: direction === "losers" ? -Math.abs(htmlCard.changeAmount) : htmlCard.changeAmount,
-      percentChange: direction === "losers" ? -Math.abs(htmlCard.changePct) : htmlCard.changePct,
-      tcgPlayerUrl,
-      imageUrl,
-    });
-  }
-
-  console.log(`[scraper] Found ${cards.length} cards`);
-  return cards;
 }
 
 /**
@@ -165,7 +156,10 @@ export async function downloadCardImages(
     try {
       console.log(`[scraper] Downloading image for: ${card.name}`);
       const imgRes = await fetch(card.imageUrl, {
-        headers: { "User-Agent": UA },
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
       });
 
       if (imgRes.ok) {
