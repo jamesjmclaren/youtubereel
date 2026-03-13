@@ -81,7 +81,17 @@ export async function scrapeTopCards(
     cardNumber: string;
   }> = [];
 
-  $(".gainer-card, .loser-card, .mover-card").each((_, el) => {
+  // Try multiple selectors: class-based (legacy) and data-attribute-based (resilient)
+  const cardEls = $(".gainer-card, .loser-card, .mover-card, [data-product-id-card]");
+  console.log(`[scraper] Found ${cardEls.length} card elements in HTML`);
+
+  if (cardEls.length === 0) {
+    // Dump page structure for debugging
+    const bodyText = $("body").text().slice(0, 500).replace(/\s+/g, " ").trim();
+    console.warn(`[scraper] Page body preview: ${bodyText}`);
+  }
+
+  cardEls.each((_, el) => {
     const $el = $(el);
     const productId = $el.attr("data-product-id-card") || "";
     const subType = $el.attr("data-sub-type") || "Holofoil";
