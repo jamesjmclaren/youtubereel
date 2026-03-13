@@ -22,29 +22,54 @@ export async function scrapeTopCards(
 
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--single-process",
+    ],
   });
 
   try {
     const page = await browser.newPage();
     await page.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     );
 
-    await page.goto(url, { waitUntil: "networkidle2", timeout: 30_000 });
+    // Use domcontentloaded (faster) then wait for JS to render cards
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        break;
+      } catch (err) {
+        if (attempt < MAX_RETRIES) {
+          const delay = (attempt + 1) * 5_000;
+          console.warn(`[scraper] Navigation failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying in ${delay / 1000}s...`);
+          await new Promise((r) => setTimeout(r, delay));
+        } else {
+          throw err;
+        }
+      }
+    }
 
-    // Wait for card elements to render (try multiple possible selectors)
+    // Wait for card elements to render after JS executes
+    const CARD_SELECTOR = ".gainer-card, .loser-card, .mover-card, [data-product-id-card]";
     try {
-      await page.waitForSelector(
-        ".gainer-card, .loser-card, .mover-card, [data-product-id-card]",
-        { timeout: 10_000 }
-      );
+      await page.waitForSelector(CARD_SELECTOR, { timeout: 30_000 });
     } catch {
-      // Dump page content for debugging
-      const bodyText = await page.evaluate(() =>
-        document.body.innerText.slice(0, 500)
-      );
-      console.warn(`[scraper] No card elements found after waiting. Page preview: ${bodyText}`);
+      // Try waiting for networkidle as a fallback (page may still be loading data)
+      console.warn("[scraper] Cards not found yet, waiting for network to settle...");
+      try {
+        await page.waitForNetworkIdle({ timeout: 15_000 });
+        await page.waitForSelector(CARD_SELECTOR, { timeout: 10_000 });
+      } catch {
+        const bodyText = await page.evaluate(() =>
+          document.body.innerText.slice(0, 500)
+        );
+        console.warn(`[scraper] No card elements found after waiting. Page preview: ${bodyText}`);
+      }
     }
 
     // Extract card data from the rendered page
