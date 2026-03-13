@@ -55,13 +55,19 @@ export async function scrapeTopCards(
   const $ = cheerio.load(html);
 
   // 1. Parse JSON-LD for card metadata (names, images, rarity, TCGPlayer URLs)
-  const jsonLdScript = $('script[type="application/ld+json"]').text();
   let jsonLdItems: JsonLdItem[] = [];
-  try {
-    const jsonLd = JSON.parse(jsonLdScript) as JsonLdData;
-    jsonLdItems = jsonLd.itemListElement || [];
-  } catch {
-    console.warn("[scraper] Failed to parse JSON-LD");
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const jsonLd = JSON.parse($(el).text());
+      if (jsonLd["@type"] === "ItemList" && Array.isArray(jsonLd.itemListElement)) {
+        jsonLdItems = jsonLd.itemListElement;
+      }
+    } catch {
+      // skip non-matching JSON-LD blocks
+    }
+  });
+  if (jsonLdItems.length === 0) {
+    console.warn("[scraper] No ItemList found in JSON-LD");
   }
 
   // 2. Parse HTML data attributes for price change data
@@ -75,7 +81,7 @@ export async function scrapeTopCards(
     cardNumber: string;
   }> = [];
 
-  $(".gainer-card").each((_, el) => {
+  $(".gainer-card, .loser-card, .mover-card").each((_, el) => {
     const $el = $(el);
     const productId = $el.attr("data-product-id-card") || "";
     const subType = $el.attr("data-sub-type") || "Holofoil";
