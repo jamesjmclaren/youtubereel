@@ -7,7 +7,7 @@ const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const PERIOD_MAP: Record<PipelineConfig["period"], string> = {
-  "24h": "1d",
+  "24h": "24h",
   "7d": "7d",
   "30d": "30d",
   "90d": "90d",
