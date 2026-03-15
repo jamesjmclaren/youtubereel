@@ -41,7 +41,8 @@ export async function scrapeTopCards(
 ): Promise<CardData[]> {
   const period = PERIOD_MAP[config.period];
   const direction = config.direction ?? "gainers";
-  const slug = direction === "losers" ? "top-losers" : "top-gainers";
+  // Curated "top-losers" is often empty; "all-losers" has data
+  const slug = direction === "losers" ? "all-losers" : "top-gainers";
   const url = `https://www.tcgmarketnews.com/pokemon/${slug}/${period}?price_filter=${config.priceFilter}&sealed_filter=singles_only`;
 
   console.log(`[scraper] Fetching: ${url}`);
@@ -117,8 +118,8 @@ export async function scrapeTopCards(
       rarity,
       type: htmlCard.subType,
       price: htmlCard.price,
-      dollarChange: direction === "losers" ? -Math.abs(htmlCard.changeAmount) : htmlCard.changeAmount,
-      percentChange: direction === "losers" ? -Math.abs(htmlCard.changePct) : htmlCard.changePct,
+      dollarChange: htmlCard.changeAmount,
+      percentChange: htmlCard.changePct,
       tcgPlayerUrl,
       imageUrl,
     });
