@@ -1,7 +1,16 @@
-import { createCanvas, loadImage } from "@napi-rs/canvas";
+import { createCanvas, loadImage, GlobalFonts } from "@napi-rs/canvas";
 import { writeFile, readFile, mkdir } from "fs/promises";
+import { existsSync } from "fs";
 import path from "path";
 import type { CardData } from "./types.js";
+
+// Register bundled Inter font for consistent rendering across platforms
+const fontDir = path.join(import.meta.dirname, "..", "assets", "fonts");
+if (existsSync(path.join(fontDir, "Inter-Bold.ttf"))) {
+  GlobalFonts.registerFromPath(path.join(fontDir, "Inter-Bold.ttf"), "Inter");
+  GlobalFonts.registerFromPath(path.join(fontDir, "Inter-Regular.ttf"), "Inter");
+}
+const F = "Inter, sans-serif";
 
 const WIDTH = 1080;
 const HEIGHT = 1920;
@@ -168,18 +177,18 @@ function drawTitle(ctx: Ctx, theme: ThemeColors, period: string, title?: string,
 
   // Main title
   ctx.fillStyle = theme.textWhite;
-  ctx.font = "bold 56px sans-serif";
+  ctx.font = `bold 56px ${F}`;
   ctx.textAlign = "center";
   ctx.fillText(title ?? "POKEMON TCG", WIDTH / 2, 110);
 
   // Subtitle with period
-  ctx.font = "bold 42px sans-serif";
+  ctx.font = `bold 42px ${F}`;
   ctx.fillStyle = theme.accent;
   ctx.fillText(subtitle ?? `TOP 5 MOVERS — ${periodLabel}`, WIDTH / 2, 165);
 
   // Description line
   ctx.fillStyle = theme.textMuted;
-  ctx.font = "20px sans-serif";
+  ctx.font = `20px ${F}`;
   ctx.fillText("Biggest price gainers · $100+ singles · TCGPlayer", WIDTH / 2, 200);
 }
 
@@ -237,7 +246,7 @@ async function drawCard(
   const rankPadX = 8;
   const rankPadY = 4;
   const rankText = `#${card.rank}`;
-  ctx.font = `bold ${rankSize}px sans-serif`;
+  ctx.font = `bold ${rankSize}px ${F}`;
   const rankW = ctx.measureText(rankText).width + rankPadX * 2;
   const rankH = rankSize + rankPadY * 2;
   const rankX = imgX + 6;
@@ -247,14 +256,14 @@ async function drawCard(
   ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
   ctx.fill();
   ctx.fillStyle = theme.gold;
-  ctx.font = `bold ${rankSize}px sans-serif`;
+  ctx.font = `bold ${rankSize}px ${F}`;
   ctx.textAlign = "left";
   ctx.fillText(rankText, rankX + rankPadX, rankY + rankSize + rankPadY - 4);
 
   // Percentage badge — top-right corner, overlaid on image
   const pctSize = Math.round(cardWidth * 0.1);
   const pctText = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
-  ctx.font = `bold ${pctSize}px sans-serif`;
+  ctx.font = `bold ${pctSize}px ${F}`;
   const pctW = ctx.measureText(pctText).width + 16;
   const pctH = pctSize + 10;
   const pctX = imgX + imgW - pctW - 6;
@@ -264,21 +273,21 @@ async function drawCard(
   ctx.fillStyle = isPositive ? "rgba(6, 78, 59, 0.85)" : "rgba(127, 29, 29, 0.85)";
   ctx.fill();
   ctx.fillStyle = changeColor;
-  ctx.font = `bold ${pctSize}px sans-serif`;
+  ctx.font = `bold ${pctSize}px ${F}`;
   ctx.textAlign = "center";
   ctx.fillText(pctText, pctX + pctW / 2, pctY + pctSize + 2);
 
   // Price — below the image, centered in the data area
   const priceY = y + cardHeight - dataAreaH / 2;
   const priceFontSize = Math.round(cardWidth * 0.12);
-  ctx.font = `bold ${priceFontSize}px sans-serif`;
+  ctx.font = `bold ${priceFontSize}px ${F}`;
   ctx.fillStyle = theme.textWhite;
   ctx.textAlign = "center";
   ctx.fillText(`$${card.price.toFixed(2)}`, x + cardWidth / 2, priceY + priceFontSize / 3);
 
   // Dollar change — small, muted, below price
   const dollarSize = Math.round(cardWidth * 0.065);
-  ctx.font = `${dollarSize}px sans-serif`;
+  ctx.font = `${dollarSize}px ${F}`;
   ctx.fillStyle = changeColor;
   const dollarText = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
   ctx.fillText(dollarText, x + cardWidth / 2, priceY + priceFontSize / 3 + dollarSize + 6);
@@ -301,11 +310,11 @@ function drawFooter(ctx: Ctx, theme: ThemeColors) {
   ctx.textAlign = "center";
 
   ctx.fillStyle = theme.textMuted;
-  ctx.font = "18px sans-serif";
+  ctx.font = `18px ${F}`;
   ctx.fillText(`tcgmarketnews.com · ${dateStr}`, WIDTH / 2, HEIGHT - 90);
 
   ctx.fillStyle = theme.textWhite;
-  ctx.font = "bold 24px sans-serif";
+  ctx.font = `bold 24px ${F}`;
   ctx.fillText("@YourChannel", WIDTH / 2, HEIGHT - 55);
 }
 
@@ -402,6 +411,112 @@ export async function generateImage(
   await writeFile(outputPath, buffer);
   console.log(`[image-gen] Saved image to ${outputPath}`);
   return outputPath;
+}
+
+/**
+ * Generate individual full-screen slides for each card (for slideshow video).
+ * Returns array of image paths.
+ */
+export async function generateSlides(
+  cards: CardData[],
+  outputDir: string,
+  options: { theme?: string; title?: string } = {}
+): Promise<string[]> {
+  const theme = THEMES[options.theme || "indigo"] || THEMES.indigo;
+  await mkdir(outputDir, { recursive: true });
+
+  const paths: string[] = [];
+
+  for (const card of cards) {
+    const canvas = createCanvas(WIDTH, HEIGHT);
+    const ctx = canvas.getContext("2d");
+    const isPositive = card.percentChange >= 0;
+    const changeColor = isPositive ? theme.positive : theme.negative;
+
+    // Background
+    drawBackground(ctx, theme);
+
+    // Rank + title at top
+    ctx.fillStyle = theme.gold;
+    ctx.font = `bold 72px ${F}`;
+    ctx.textAlign = "center";
+    ctx.fillText(`#${card.rank}`, WIDTH / 2, 120);
+
+    ctx.fillStyle = theme.textWhite;
+    ctx.font = `bold 36px ${F}`;
+    ctx.fillText(options.title || "TOP MOVERS", WIDTH / 2, 175);
+
+    // Large card image in center
+    const imgW = 580;
+    const imgH = 810;
+    const imgX = (WIDTH - imgW) / 2;
+    const imgY = 220;
+
+    if (card.imageUrl) {
+      try {
+        const img = await loadImage(card.imageUrl);
+        const scale = Math.min(imgW / img.width, imgH / img.height);
+        const drawW = img.width * scale;
+        const drawH = img.height * scale;
+        const drawX = imgX + (imgW - drawW) / 2;
+        const drawY = imgY + (imgH - drawH) / 2;
+
+        // Card glow
+        ctx.save();
+        ctx.shadowColor = isPositive ? theme.accentGlow : "rgba(248, 113, 113, 0.3)";
+        ctx.shadowBlur = 40;
+        drawRoundedRect(ctx, drawX - 4, drawY - 4, drawW + 8, drawH + 8, 16);
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.fill();
+        ctx.restore();
+
+        ctx.save();
+        drawRoundedRect(ctx, drawX, drawY, drawW, drawH, 12);
+        ctx.clip();
+        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+        ctx.restore();
+      } catch {
+        // placeholder
+      }
+    }
+
+    // Price section below card
+    const dataY = imgY + imgH + 60;
+
+    // Percentage — huge
+    ctx.fillStyle = changeColor;
+    ctx.font = `bold 120px ${F}`;
+    ctx.textAlign = "center";
+    const pctText = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
+    ctx.fillText(pctText, WIDTH / 2, dataY + 100);
+
+    // Price
+    ctx.fillStyle = theme.textWhite;
+    ctx.font = `bold 64px ${F}`;
+    ctx.fillText(`$${card.price.toFixed(2)}`, WIDTH / 2, dataY + 185);
+
+    // Dollar change
+    ctx.fillStyle = changeColor;
+    ctx.font = `36px ${F}`;
+    const dollarText = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
+    ctx.fillText(dollarText, WIDTH / 2, dataY + 235);
+
+    // Card name + set at bottom
+    ctx.fillStyle = theme.textWhite;
+    ctx.font = `bold 32px ${F}`;
+    ctx.fillText(card.name, WIDTH / 2, HEIGHT - 140);
+
+    ctx.fillStyle = theme.textMuted;
+    ctx.font = `22px ${F}`;
+    ctx.fillText(card.setName, WIDTH / 2, HEIGHT - 100);
+
+    const slidePath = path.join(outputDir, `slide-${card.rank}.png`);
+    await writeFile(slidePath, canvas.toBuffer("image/png"));
+    paths.push(slidePath);
+    console.log(`[image-gen] Generated slide ${card.rank}: ${card.name}`);
+  }
+
+  return paths;
 }
 
 // CLI entry point
