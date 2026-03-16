@@ -1,7 +1,7 @@
 import { mkdir, writeFile, readdir } from "fs/promises";
 import { scrapeTopCards, downloadCardImages } from "./scraper.js";
-import { generateImage } from "./image-generator.js";
-import { renderVideo } from "./video-renderer.js";
+import { generateImage, generateSlides } from "./image-generator.js";
+import { renderVideo, renderSlideshow } from "./video-renderer.js";
 import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
@@ -30,19 +30,7 @@ async function run(
   cards = await downloadCardImages(cards, `${runDir}/images`);
   await writeFile(`${runDir}/cards.json`, JSON.stringify(cards, null, 2));
 
-  // Step 3: Generate image
-  console.log("\n━━━ Step 3: Generating thumbnail ━━━");
-  const imagePath = `${runDir}/thumbnail.png`;
-  await generateImage(cards, imagePath, {
-    period: config.period,
-    theme: preset?.theme || "indigo",
-    title: preset?.title,
-    subtitle: preset?.subtitle,
-  });
-
-  // Step 4: Render video
-  console.log("\n━━━ Step 4: Rendering video ━━━");
-  const videoPath = `${runDir}/short.mp4`;
+  // Pick a random music track
   let musicPath = "assets/music.mp3";
   try {
     const assetFiles = await readdir("assets");
@@ -53,7 +41,35 @@ async function run(
       console.log(`Using music: ${pick}`);
     }
   } catch { /* use default */ }
-  await renderVideo(imagePath, videoPath, musicPath);
+
+  // Alternate between grid and slideshow style (50/50)
+  const useSlideshow = Math.random() > 0.5;
+  const videoPath = `${runDir}/short.mp4`;
+
+  if (useSlideshow) {
+    // Slideshow: one card at a time
+    console.log("\n━━━ Step 3: Generating slides ━━━");
+    const slidePaths = await generateSlides(cards, `${runDir}/slides`, {
+      theme: preset?.theme || "indigo",
+      title: preset?.title,
+    });
+
+    console.log("\n━━━ Step 4: Rendering slideshow video ━━━");
+    await renderSlideshow(slidePaths, videoPath, musicPath);
+  } else {
+    // Grid: all cards on one image
+    console.log("\n━━━ Step 3: Generating thumbnail ━━━");
+    const imagePath = `${runDir}/thumbnail.png`;
+    await generateImage(cards, imagePath, {
+      period: config.period,
+      theme: preset?.theme || "indigo",
+      title: preset?.title,
+      subtitle: preset?.subtitle,
+    });
+
+    console.log("\n━━━ Step 4: Rendering video ━━━");
+    await renderVideo(imagePath, videoPath, musicPath);
+  }
 
   // Step 5: Upload
   if (!skipUpload) {
