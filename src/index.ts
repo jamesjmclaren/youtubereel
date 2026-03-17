@@ -43,14 +43,19 @@ async function run(
     }
   } catch { /* use default */ }
 
-  // Check that at least half the cards have successfully downloaded images
+  // Drop cards where image download failed — never show placeholders in the video
   const cardsWithImages = cards.filter((c) => c.imageUrl && !c.imageUrl.startsWith("http"));
-  if (cardsWithImages.length < Math.ceil(cards.length / 2)) {
-    console.error(
-      `[pipeline] Only ${cardsWithImages.length}/${cards.length} card images downloaded. Aborting to avoid publishing a video without images.`
-    );
+  if (cardsWithImages.length === 0) {
+    console.error("[pipeline] No card images downloaded. Aborting.");
     process.exit(1);
   }
+  if (cardsWithImages.length < cards.length) {
+    console.warn(
+      `[pipeline] ${cards.length - cardsWithImages.length} card(s) dropped (no image). Using ${cardsWithImages.length} cards.`
+    );
+  }
+  // Re-rank after dropping image-less cards
+  cards = cardsWithImages.map((c, i) => ({ ...c, rank: i + 1 }));
 
   const duration = videoDuration(cards.length);
 
