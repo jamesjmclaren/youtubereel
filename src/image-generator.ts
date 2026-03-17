@@ -255,6 +255,7 @@ async function drawCard(
   const dataAreaH = 90;
   const imgH = cardHeight - dataAreaH - imgPad;
 
+  let imageLoaded = false;
   if (card.imageUrl) {
     try {
       const img = await loadImage(card.imageUrl);
@@ -269,11 +270,34 @@ async function drawCard(
       ctx.clip();
       ctx.drawImage(img, drawX, drawY, drawW, drawH);
       ctx.restore();
-    } catch {
-      drawRoundedRect(ctx, imgX, imgY, imgW, imgH, 10);
-      ctx.fillStyle = "rgba(255,255,255,0.03)";
-      ctx.fill();
+      imageLoaded = true;
+    } catch { /* fall through to placeholder */ }
+  }
+  if (!imageLoaded) {
+    // Placeholder: gradient panel with card name
+    const grad = ctx.createLinearGradient(imgX, imgY, imgX + imgW, imgY + imgH);
+    grad.addColorStop(0, theme.glass);
+    grad.addColorStop(1, theme.accentGlow);
+    drawRoundedRect(ctx, imgX, imgY, imgW, imgH, 10);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = theme.glassBorder;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Card name centred in placeholder
+    const nameSize = Math.max(Math.round(cardWidth * 0.07), 11);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = theme.textMuted;
+    ctx.font = `${nameSize}px ${F}`;
+    ctx.textAlign = "center";
+    const words = card.name.split(" ");
+    const lineH = nameSize + 4;
+    const startTextY = imgY + imgH / 2 - ((words.length - 1) * lineH) / 2;
+    for (let w = 0; w < words.length; w++) {
+      ctx.fillText(words[w], imgX + imgW / 2, startTextY + w * lineH);
     }
+    ctx.restore();
   }
 
   // Rank badge — top-left corner, overlaid on image
@@ -537,6 +561,7 @@ export async function generateSlides(
     const imgX = (WIDTH - imgW) / 2;
     const imgY = 220;
 
+    let slideImageLoaded = false;
     if (card.imageUrl) {
       try {
         const img = await loadImage(card.imageUrl);
@@ -560,9 +585,27 @@ export async function generateSlides(
         ctx.clip();
         ctx.drawImage(img, drawX, drawY, drawW, drawH);
         ctx.restore();
-      } catch {
-        // placeholder
-      }
+        slideImageLoaded = true;
+      } catch { /* fall through to placeholder */ }
+    }
+    if (!slideImageLoaded) {
+      // Gradient placeholder with card name
+      const grad = ctx.createLinearGradient(imgX, imgY, imgX + imgW, imgY + imgH);
+      grad.addColorStop(0, theme.glass);
+      grad.addColorStop(1, theme.accentGlow);
+      drawRoundedRect(ctx, imgX, imgY, imgW, imgH, 16);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = theme.glassBorder;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = theme.textMuted;
+      ctx.font = `bold 36px ${F}`;
+      ctx.textAlign = "center";
+      const words = card.name.split(" ");
+      const lineH = 44;
+      const startY = imgY + imgH / 2 - ((words.length - 1) * lineH) / 2;
+      words.forEach((w, i) => ctx.fillText(w, WIDTH / 2, startY + i * lineH));
     }
 
     // Data section below card

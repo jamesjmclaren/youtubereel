@@ -147,28 +147,40 @@ export async function downloadCardImages(
       continue;
     }
 
-    try {
-      console.log(`[scraper] Downloading image for: ${card.name}`);
-      const imgRes = await fetch(card.imageUrl, {
-        headers: { "User-Agent": UA },
-      });
+    const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
+    let downloaded = false;
 
-      if (imgRes.ok) {
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-        const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
-        await writeFile(imgPath, buffer);
-        results.push({ ...card, imageUrl: imgPath });
-        console.log(`[scraper] Saved image for ${card.name}`);
-      } else {
-        console.warn(`[scraper] Failed to download image for ${card.name}: ${imgRes.status}`);
-        results.push(card);
+    for (let attempt = 1; attempt <= 3 && !downloaded; attempt++) {
+      try {
+        if (attempt > 1) {
+          console.log(`[scraper] Retry ${attempt}/3 for: ${card.name}`);
+          await new Promise((r) => setTimeout(r, attempt * 600));
+        } else {
+          console.log(`[scraper] Downloading image for: ${card.name}`);
+        }
+        const imgRes = await fetch(card.imageUrl, {
+          headers: { "User-Agent": UA },
+        });
+        if (imgRes.ok) {
+          const buffer = Buffer.from(await imgRes.arrayBuffer());
+          await writeFile(imgPath, buffer);
+          results.push({ ...card, imageUrl: imgPath });
+          console.log(`[scraper] Saved image for ${card.name}`);
+          downloaded = true;
+        } else {
+          console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} (attempt ${attempt})`);
+        }
+      } catch (err) {
+        console.warn(`[scraper] Error downloading image for ${card.name} (attempt ${attempt}):`, err);
       }
-    } catch (err) {
-      console.warn(`[scraper] Error downloading image for ${card.name}:`, err);
-      results.push(card);
     }
 
-    // Small delay between requests
+    if (!downloaded) {
+      console.warn(`[scraper] All attempts failed for ${card.name}, using URL fallback`);
+      results.push(card); // keep HTTP URL so canvas can try loading it directly
+    }
+
+    // Small delay between cards
     await new Promise((r) => setTimeout(r, 300));
   }
 
