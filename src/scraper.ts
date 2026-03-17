@@ -91,9 +91,12 @@ export async function scrapeTopCards(
     const badges = $el.find(".card-details-badge span");
     const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
 
-    // Image URL: read directly from the <img> tag in the card — the most reliable source.
-    // JSON-LD does not contain image fields. Upgrade 200w → 400w for better quality.
-    const imgSrc = $el.find("img").first().attr("src");
+    // Image URL: find the card artwork img (must be an absolute CDN URL, not a logo).
+    // JSON-LD does not contain image fields on this page.
+    // Upgrade 200w → 400w for better quality.
+    const imgSrc = $el.find("img").toArray()
+      .map((el) => $(el).attr("src") ?? "")
+      .find((src) => src.startsWith("http"));
     const imageUrl = imgSrc
       ? imgSrc.replace("_200w", "_400w")
       : (productId ? `https://tcgplayer-cdn.tcgplayer.com/product/${productId}_200w.jpg` : undefined);
