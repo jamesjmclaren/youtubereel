@@ -250,9 +250,6 @@ const HIGH_TIER_RARITIES = new Set([
   "Illustration Rare",
   "Special Illustration Rare",
   "Ultra Rare",
-  "Double Rare",
-  "Mega Attack Rare",
-  "Mega Hyper Rare",
 ]);
 
 /**
