@@ -74,6 +74,7 @@ export async function scrapeTopCards(
     changePct: number;
     setName: string;
     cardNumber: string;
+    imageUrl: string | undefined;
   }> = [];
 
   $(".gainer-card").each((_, el) => {
@@ -90,7 +91,14 @@ export async function scrapeTopCards(
     const badges = $el.find(".card-details-badge span");
     const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
 
-    htmlCards.push({ productId, subType, price, changeAmount, changePct, setName, cardNumber });
+    // Image URL: read directly from the <img> tag in the card — the most reliable source.
+    // JSON-LD does not contain image fields. Upgrade 200w → 400w for better quality.
+    const imgSrc = $el.find("img").first().attr("src");
+    const imageUrl = imgSrc
+      ? imgSrc.replace("_200w", "_400w")
+      : (productId ? `https://tcgplayer-cdn.tcgplayer.com/product/${productId}_200w.jpg` : undefined);
+
+    htmlCards.push({ productId, subType, price, changeAmount, changePct, setName, cardNumber, imageUrl });
   });
 
   // 3. Merge JSON-LD + HTML data, taking the top N
@@ -105,13 +113,8 @@ export async function scrapeTopCards(
     const cardName = nameParts[0].trim();
     const number = htmlCard.cardNumber || nameParts[1]?.trim() || "";
 
-    // Get image URL: prefer JSON-LD, fall back to constructing from productId
-    // TCGPlayer CDN pattern: https://tcgplayer-cdn.tcgplayer.com/product/{id}_400w.jpg
-    const imageUrl =
-      jsonLdItem?.image?.replace("_200w", "_400w") ||
-      (htmlCard.productId
-        ? `https://tcgplayer-cdn.tcgplayer.com/product/${htmlCard.productId}_400w.jpg`
-        : undefined);
+    // Image URL comes from the HTML <img> tag (scraped above) — JSON-LD has no images.
+    const imageUrl = htmlCard.imageUrl;
     const rarity = jsonLdItem?.additionalProperty?.value || "";
     const tcgPlayerUrl = jsonLdItem?.offers?.url || "";
 
