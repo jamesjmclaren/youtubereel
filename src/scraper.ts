@@ -200,6 +200,159 @@ export const scrapeTopGainers = (
   config: Pick<PipelineConfig, "period" | "priceFilter" | "topN">
 ) => scrapeTopCards({ ...config, direction: "gainers" });
 
+/**
+ * Discover the latest N Pokémon TCG sets from tcgmarketnews.com.
+ * Skips promo, energy, and trainer-only sets (they rarely have high-tier cards).
+ */
+export async function discoverLatestSets(
+  count: number
+): Promise<Array<{ name: string; slug: string; date: string }>> {
+  const url = "https://www.tcgmarketnews.com/pokemon/sets";
+  console.log(`[scraper] Fetching sets list: ${url}`);
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": UA, Accept: "text/html" },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch sets: ${res.status}`);
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  const SKIP_PATTERNS = /promo|energies|first partner|trainer|collection|league|championship/i;
+  const sets: Array<{ name: string; slug: string; date: string }> = [];
+
+  $("a[href^='/set/']").each((_, el) => {
+    if (sets.length >= count) return;
+    const $el = $(el);
+    const href = $el.attr("href") || "";
+    const slug = href.replace("/set/", "");
+    const name =
+      $el.find(".set-item-name").text().trim() || $el.text().trim();
+    const date = $el.find(".set-item-date").text().trim();
+    if (!slug || !name || SKIP_PATTERNS.test(name)) return;
+    sets.push({ name, slug, date });
+  });
+
+  console.log(
+    `[scraper] Latest ${sets.length} sets: ${sets.map((s) => s.name).join(", ")}`
+  );
+  return sets;
+}
+
+const SET_PERIOD_MAP: Record<string, string> = {
+  "24h": "1",
+  "7d": "7",
+  "30d": "30",
+  "90d": "90",
+};
+
+const HIGH_TIER_RARITIES = new Set([
+  "Illustration Rare",
+  "Special Illustration Rare",
+  "Ultra Rare",
+  "Double Rare",
+  "Mega Attack Rare",
+  "Mega Hyper Rare",
+]);
+
+/**
+ * Scrape top movers from a specific set's page, filtered by rarity.
+ */
+export async function scrapeSetCards(config: {
+  setSlug: string;
+  period: string;
+  topN: number;
+  rarityFilter?: string[];
+}): Promise<CardData[]> {
+  const period = SET_PERIOD_MAP[config.period] || config.period;
+  const url = `https://www.tcgmarketnews.com/set/${config.setSlug}?period=${period}&sort=percent_change`;
+
+  console.log(`[scraper] Fetching set: ${url}`);
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": UA, Accept: "text/html" },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch set page: ${res.status}`);
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  // JSON-LD has image/name/tcgPlayerUrl (limited to 20 items)
+  let jsonLdItems: JsonLdItem[] = [];
+  try {
+    const jsonLd = JSON.parse(
+      $('script[type="application/ld+json"]').text()
+    ) as JsonLdData;
+    jsonLdItems = jsonLd.itemListElement || [];
+  } catch {}
+
+  const allowedRarities = config.rarityFilter
+    ? new Set(config.rarityFilter)
+    : HIGH_TIER_RARITIES;
+
+  const cards: CardData[] = [];
+
+  $(".gainer-card").each((i, el) => {
+    if (cards.length >= config.topN) return;
+
+    const $el = $(el);
+    const badges = $el.find(".card-details-badge span");
+    const rarity = badges.length > 0 ? $(badges[0]).text().trim() : "";
+
+    if (!allowedRarities.has(rarity)) return;
+
+    const productId = $el.attr("data-product-id-card") || "";
+    const subType = $el.attr("data-sub-type") || "Holofoil";
+    const price = parseFloat($el.attr("data-current-price") || "0");
+    const changeAmount = parseFloat(
+      $el.attr("data-price-change-amount") || "0"
+    );
+    const changePct = parseFloat(
+      $el.attr("data-price-change-percentage") || "0"
+    );
+    const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
+    const setName = $el.find(".group-link").text().trim();
+
+    // Prefer .card-name from HTML (always present), fall back to JSON-LD
+    const jsonLdItem = jsonLdItems[i]?.item;
+    const htmlName = $el.find(".card-name").text().trim() || $el.find("h3").text().trim();
+    const rawName = htmlName || jsonLdItem?.name || `Card #${productId}`;
+    const name = $("<div>").html(rawName).text();
+    const nameParts = name.split(" - ");
+    const cardName = nameParts[0].trim();
+    const number = cardNumber || nameParts[1]?.trim() || "";
+
+    const imageUrl =
+      jsonLdItem?.image?.replace("_200w", "_400w") ||
+      (productId
+        ? `https://tcgplayer-cdn.tcgplayer.com/product/${productId}_200w.jpg`
+        : undefined);
+    const tcgPlayerUrl =
+      jsonLdItem?.offers?.url ||
+      $el.find("a[href*='tcgplayer.com']").attr("href") ||
+      "";
+
+    cards.push({
+      rank: cards.length + 1,
+      name: cardName,
+      number,
+      setName,
+      rarity,
+      type: subType,
+      price,
+      dollarChange: changeAmount,
+      percentChange: changePct,
+      tcgPlayerUrl,
+      imageUrl,
+    });
+  });
+
+  console.log(
+    `[scraper] Found ${cards.length} high-tier cards in ${config.setSlug}`
+  );
+  return cards;
+}
+
 // CLI entry point
 if (process.argv[1]?.includes("scraper")) {
   const config = {

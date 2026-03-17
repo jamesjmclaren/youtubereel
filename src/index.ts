@@ -1,10 +1,10 @@
 import { mkdir, writeFile, readdir } from "fs/promises";
-import { scrapeTopCards, downloadCardImages } from "./scraper.js";
+import { scrapeTopCards, scrapeSetCards, downloadCardImages } from "./scraper.js";
 import { generateImage, generateSlides } from "./image-generator.js";
 import type { CardData } from "./types.js";
 import { renderVideo, renderSlideshow, videoDuration } from "./video-renderer.js";
 import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
-import { CONTENT_PRESETS, getPresetForToday } from "./presets.js";
+import { CONTENT_PRESETS, getPresetForToday, getPresetForTodayWithSets, buildSetPresets } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
 
 async function run(
@@ -19,10 +19,19 @@ async function run(
 
   // Step 1: Scrape
   console.log("\n━━━ Step 1: Scraping cards ━━━");
-  let cards = await scrapeTopCards(config);
+  let cards: CardData[];
+  if (preset?.setSlug) {
+    cards = await scrapeSetCards({
+      setSlug: preset.setSlug,
+      period: config.period,
+      topN: config.topN,
+      rarityFilter: preset.rarityFilter,
+    });
+  } else {
+    cards = await scrapeTopCards(config);
+  }
   if (cards.length === 0) {
-    console.error("No cards found. Aborting.");
-    process.exit(1);
+    throw new Error("No cards found. Aborting.");
   }
   console.log(`Found ${cards.length} cards`);
 
@@ -46,8 +55,7 @@ async function run(
   // Drop cards where image download failed — never show placeholders in the video
   const cardsWithImages = cards.filter((c) => c.imageUrl && !c.imageUrl.startsWith("http"));
   if (cardsWithImages.length === 0) {
-    console.error("[pipeline] No card images downloaded. Aborting.");
-    process.exit(1);
+    throw new Error("No card images downloaded. Aborting.");
   }
   if (cardsWithImages.length < cards.length) {
     console.warn(
@@ -127,46 +135,96 @@ if (args.includes("--auth")) {
     console.log(`    ${p.title} — ${p.subtitle}`);
     console.log(`    ${p.direction} | ${p.period} | price: ${p.priceFilter || "all"} | top ${p.topN} | theme: ${p.theme}\n`);
   }
-  const today = getPresetForToday();
+  console.log("Dynamic set presets (latest sets):\n");
+  const setPresets = await buildSetPresets(4);
+  for (const p of setPresets) {
+    console.log(`  ${p.name}`);
+    console.log(`    ${p.title} — ${p.subtitle}`);
+    console.log(`    set: ${p.setSlug} | ${p.period} | top ${p.topN} | theme: ${p.theme}\n`);
+  }
+  const today = await getPresetForTodayWithSets();
   console.log(`Today's auto-pick: ${today.name}`);
 } else {
   const skipUpload = args.includes("--no-upload");
+  const dualMode = args.includes("--dual");
 
-  // Use a specific preset, or auto-rotate
-  const presetArg = args.find((a) => a.startsWith("--preset="));
-  let preset: ContentPreset;
-
-  if (presetArg) {
-    const name = presetArg.split("=")[1];
-    const found = CONTENT_PRESETS.find((p) => p.name === name);
-    if (!found) {
-      console.error(`Unknown preset: ${name}. Run --list-presets to see options.`);
-      process.exit(1);
+  async function resolvePreset(name?: string): Promise<ContentPreset> {
+    if (name) {
+      let found = CONTENT_PRESETS.find((p) => p.name === name);
+      if (!found && name.startsWith("set-")) {
+        const setPresets = await buildSetPresets(4);
+        found = setPresets.find((p) => p.name === name);
+      }
+      if (!found) {
+        console.error(`Unknown preset: ${name}. Run --list-presets to see options.`);
+        process.exit(1);
+      }
+      return found;
     }
-    preset = found;
-  } else {
-    preset = getPresetForToday();
+    return getPresetForToday();
   }
 
-  // Allow CLI overrides
-  const config: PipelineConfig = {
-    period: preset.period,
-    priceFilter: preset.priceFilter,
-    topN: preset.topN,
-    outputDir: "output",
-    direction: preset.direction,
-  };
+  async function runPreset(preset: ContentPreset) {
+    const config: PipelineConfig = {
+      period: preset.period,
+      priceFilter: preset.priceFilter,
+      topN: preset.topN,
+      outputDir: "output",
+      direction: preset.direction,
+    };
 
-  const periodArg = args.find((a) => a.startsWith("--period="));
-  if (periodArg) config.period = periodArg.split("=")[1] as PipelineConfig["period"];
-  const topArg = args.find((a) => a.startsWith("--top="));
-  if (topArg) config.topN = parseInt(topArg.split("=")[1]);
+    const periodArg = args.find((a) => a.startsWith("--period="));
+    if (periodArg) config.period = periodArg.split("=")[1] as PipelineConfig["period"];
+    const topArg = args.find((a) => a.startsWith("--top="));
+    if (topArg) config.topN = parseInt(topArg.split("=")[1]);
 
-  console.log("🎬 YouTube Shorts Pipeline");
-  console.log(`   Preset: ${preset.name}`);
-  console.log(`   Title:  ${preset.title}`);
-  console.log(`   ${config.direction} | ${config.period} | price: ${config.priceFilter || "all"} | top ${config.topN} | theme: ${preset.theme}`);
-  console.log(`   Upload: ${!skipUpload}`);
+    console.log("\n🎬 YouTube Shorts Pipeline");
+    console.log(`   Preset: ${preset.name}`);
+    console.log(`   Title:  ${preset.title}`);
+    console.log(`   ${config.direction} | ${config.period} | price: ${config.priceFilter || "all"} | top ${config.topN} | theme: ${preset.theme}`);
+    console.log(`   Upload: ${!skipUpload}`);
 
-  await run(config, preset, skipUpload);
+    await run(config, preset, skipUpload);
+  }
+
+  if (dualMode) {
+    // Run two videos: one generic (auto-rotate) + one for the latest set
+    const genericPreset = getPresetForToday();
+    const setPresets = await buildSetPresets(4);
+    let failures = 0;
+
+    console.log("═══ DUAL MODE: 2 videos tonight ═══");
+
+    console.log("\n── Video 1: Generic ──");
+    try {
+      await runPreset(genericPreset);
+    } catch (err) {
+      console.error(`[pipeline] Generic video failed: ${(err as Error).message}`);
+      failures++;
+    }
+
+    let setSuccess = false;
+    for (const setPreset of setPresets) {
+      console.log(`\n── Video 2: ${setPreset.title} ──`);
+      try {
+        await runPreset(setPreset);
+        setSuccess = true;
+        break;
+      } catch (err) {
+        console.warn(`[pipeline] ${setPreset.name} failed: ${(err as Error).message}, trying next set...`);
+      }
+    }
+    if (!setSuccess) {
+      console.error("[pipeline] All set presets failed.");
+      failures++;
+    }
+
+    if (failures === 2) {
+      process.exit(1);
+    }
+  } else {
+    const presetArg = args.find((a) => a.startsWith("--preset="));
+    const preset = await resolvePreset(presetArg?.split("=")[1]);
+    await runPreset(preset);
+  }
 }

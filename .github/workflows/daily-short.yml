@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       preset:
-        description: "Content preset (leave empty for auto-rotate)"
+        description: "Content preset (leave empty for dual mode: generic + latest set)"
         required: false
         type: choice
         options:
@@ -57,6 +57,8 @@ jobs:
           ARGS=""
           if [ -n "${{ inputs.preset }}" ]; then
             ARGS="--preset=${{ inputs.preset }}"
+          else
+            ARGS="--dual"
           fi
           if [ "${{ inputs.skip_upload }}" = "true" ]; then
             ARGS="$ARGS --no-upload"

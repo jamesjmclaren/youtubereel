@@ -1,4 +1,5 @@
 import type { ContentPreset } from "./types.js";
+import { discoverLatestSets } from "./scraper.js";
 
 export const CONTENT_PRESETS: ContentPreset[] = [
   {
@@ -72,6 +73,48 @@ export const CONTENT_PRESETS: ContentPreset[] = [
     theme: "indigo",
   },
 ];
+
+const SET_THEMES = ["indigo", "emerald", "amber", "crimson"];
+
+/**
+ * Dynamically build presets for the latest N sets by discovering them from
+ * tcgmarketnews.com. Filters to high-tier rarities (IR, SIR, UR, DR).
+ */
+export async function buildSetPresets(count = 2): Promise<ContentPreset[]> {
+  const sets = await discoverLatestSets(count);
+  return sets.map((set, i) => ({
+    name: `set-${set.slug}`,
+    title: `${set.name} Top 5 Movers`,
+    subtitle: `Hottest high-tier cards right now`,
+    direction: "gainers" as const,
+    period: "24h" as const,
+    priceFilter: "",
+    topN: 5,
+    theme: SET_THEMES[i % SET_THEMES.length],
+    setSlug: set.slug,
+    rarityFilter: [
+      "Illustration Rare",
+      "Special Illustration Rare",
+      "Ultra Rare",
+      "Double Rare",
+      "Mega Attack Rare",
+      "Mega Hyper Rare",
+    ],
+  }));
+}
+
+/**
+ * Get today's preset from the full rotation (static + dynamic set presets).
+ */
+export async function getPresetForTodayWithSets(): Promise<ContentPreset> {
+  const setPresets = await buildSetPresets(2);
+  const allPresets = [...CONTENT_PRESETS, ...setPresets];
+  const now = new Date();
+  const start = new Date(now.getFullYear(), 0, 0);
+  const diff = now.getTime() - start.getTime();
+  const dayOfYear = Math.floor(diff / (1000 * 60 * 60 * 24));
+  return allPresets[dayOfYear % allPresets.length];
+}
 
 export function getPresetForToday(): ContentPreset {
   const now = new Date();
