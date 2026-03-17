@@ -96,9 +96,6 @@ export async function buildSetPresets(count = 2): Promise<ContentPreset[]> {
       "Illustration Rare",
       "Special Illustration Rare",
       "Ultra Rare",
-      "Double Rare",
-      "Mega Attack Rare",
-      "Mega Hyper Rare",
     ],
   }));
 }
