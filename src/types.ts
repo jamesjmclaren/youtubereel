@@ -29,4 +29,8 @@ export interface ContentPreset {
   priceFilter: string;
   topN: number;
   theme: string;
+  /** When set, scrape this set's page instead of the global top-gainers/losers */
+  setSlug?: string;
+  /** Rarity filter for set-based presets (applied client-side) */
+  rarityFilter?: string[];
 }

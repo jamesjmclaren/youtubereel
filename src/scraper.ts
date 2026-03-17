@@ -100,13 +100,20 @@ export async function scrapeTopCards(
     const htmlCard = htmlCards[i];
     const jsonLdItem = jsonLdItems[i]?.item;
 
-    const name = jsonLdItem?.name || `Card #${htmlCard.productId}`;
+    const rawName = jsonLdItem?.name || `Card #${htmlCard.productId}`;
+    // Decode HTML entities (e.g. &#39; → ')
+    const name = $("<div>").html(rawName).text();
     const nameParts = name.split(" - ");
     const cardName = nameParts[0].trim();
     const number = htmlCard.cardNumber || nameParts[1]?.trim() || "";
 
-    // Get higher-res image from TCGPlayer CDN (replace _200w with _400w)
-    const imageUrl = jsonLdItem?.image?.replace("_200w", "_400w");
+    // Image: prefer JSON-LD (works when present), else construct from productId.
+    // TCGPlayer CDN pattern: tcgplayer-cdn.tcgplayer.com/product/{id}_200w.jpg
+    const imageUrl =
+      jsonLdItem?.image?.replace("_200w", "_400w") ||
+      (htmlCard.productId
+        ? `https://tcgplayer-cdn.tcgplayer.com/product/${htmlCard.productId}_200w.jpg`
+        : undefined);
     const rarity = jsonLdItem?.additionalProperty?.value || "";
     const tcgPlayerUrl = jsonLdItem?.offers?.url || "";
 
@@ -147,28 +154,42 @@ export async function downloadCardImages(
       continue;
     }
 
-    try {
-      console.log(`[scraper] Downloading image for: ${card.name}`);
-      const imgRes = await fetch(card.imageUrl, {
-        headers: { "User-Agent": UA },
-      });
+    const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
+    let downloaded = false;
 
-      if (imgRes.ok) {
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-        const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
-        await writeFile(imgPath, buffer);
-        results.push({ ...card, imageUrl: imgPath });
-        console.log(`[scraper] Saved image for ${card.name}`);
-      } else {
-        console.warn(`[scraper] Failed to download image for ${card.name}: ${imgRes.status}`);
-        results.push(card);
-      }
-    } catch (err) {
-      console.warn(`[scraper] Error downloading image for ${card.name}:`, err);
-      results.push(card);
+    // Try the URL as-is, then fall back to _200w if _400w returns non-200
+    const urlsToTry = [card.imageUrl];
+    if (card.imageUrl.includes("_400w")) {
+      urlsToTry.push(card.imageUrl.replace("_400w", "_200w"));
     }
 
-    // Small delay between requests
+    outer: for (const url of urlsToTry) {
+      for (let attempt = 1; attempt <= 2 && !downloaded; attempt++) {
+        try {
+          if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
+          const imgRes = await fetch(url, { headers: { "User-Agent": UA } });
+          if (imgRes.ok) {
+            const buffer = Buffer.from(await imgRes.arrayBuffer());
+            await writeFile(imgPath, buffer);
+            results.push({ ...card, imageUrl: imgPath });
+            console.log(`[scraper] Saved image for ${card.name} (${url})`);
+            downloaded = true;
+            break outer;
+          } else {
+            console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} — ${url}`);
+          }
+        } catch (err) {
+          console.warn(`[scraper] Fetch error for ${card.name} (${url}):`, (err as Error).message);
+        }
+      }
+    }
+
+    if (!downloaded) {
+      console.warn(`[scraper] All attempts failed for ${card.name}, using URL fallback`);
+      results.push(card); // keep HTTP URL so canvas can try loading it directly
+    }
+
+    // Small delay between cards
     await new Promise((r) => setTimeout(r, 300));
   }
 
@@ -178,6 +199,159 @@ export async function downloadCardImages(
 export const scrapeTopGainers = (
   config: Pick<PipelineConfig, "period" | "priceFilter" | "topN">
 ) => scrapeTopCards({ ...config, direction: "gainers" });
+
+/**
+ * Discover the latest N Pokémon TCG sets from tcgmarketnews.com.
+ * Skips promo, energy, and trainer-only sets (they rarely have high-tier cards).
+ */
+export async function discoverLatestSets(
+  count: number
+): Promise<Array<{ name: string; slug: string; date: string }>> {
+  const url = "https://www.tcgmarketnews.com/pokemon/sets";
+  console.log(`[scraper] Fetching sets list: ${url}`);
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": UA, Accept: "text/html" },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch sets: ${res.status}`);
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  const SKIP_PATTERNS = /promo|energies|first partner|trainer|collection|league|championship/i;
+  const sets: Array<{ name: string; slug: string; date: string }> = [];
+
+  $("a[href^='/set/']").each((_, el) => {
+    if (sets.length >= count) return;
+    const $el = $(el);
+    const href = $el.attr("href") || "";
+    const slug = href.replace("/set/", "");
+    const name =
+      $el.find(".set-item-name").text().trim() || $el.text().trim();
+    const date = $el.find(".set-item-date").text().trim();
+    if (!slug || !name || SKIP_PATTERNS.test(name)) return;
+    sets.push({ name, slug, date });
+  });
+
+  console.log(
+    `[scraper] Latest ${sets.length} sets: ${sets.map((s) => s.name).join(", ")}`
+  );
+  return sets;
+}
+
+const SET_PERIOD_MAP: Record<string, string> = {
+  "24h": "1",
+  "7d": "7",
+  "30d": "30",
+  "90d": "90",
+};
+
+const HIGH_TIER_RARITIES = new Set([
+  "Illustration Rare",
+  "Special Illustration Rare",
+  "Ultra Rare",
+  "Double Rare",
+  "Mega Attack Rare",
+  "Mega Hyper Rare",
+]);
+
+/**
+ * Scrape top movers from a specific set's page, filtered by rarity.
+ */
+export async function scrapeSetCards(config: {
+  setSlug: string;
+  period: string;
+  topN: number;
+  rarityFilter?: string[];
+}): Promise<CardData[]> {
+  const period = SET_PERIOD_MAP[config.period] || config.period;
+  const url = `https://www.tcgmarketnews.com/set/${config.setSlug}?period=${period}&sort=percent_change`;
+
+  console.log(`[scraper] Fetching set: ${url}`);
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": UA, Accept: "text/html" },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch set page: ${res.status}`);
+
+  const html = await res.text();
+  const $ = cheerio.load(html);
+
+  // JSON-LD has image/name/tcgPlayerUrl (limited to 20 items)
+  let jsonLdItems: JsonLdItem[] = [];
+  try {
+    const jsonLd = JSON.parse(
+      $('script[type="application/ld+json"]').text()
+    ) as JsonLdData;
+    jsonLdItems = jsonLd.itemListElement || [];
+  } catch {}
+
+  const allowedRarities = config.rarityFilter
+    ? new Set(config.rarityFilter)
+    : HIGH_TIER_RARITIES;
+
+  const cards: CardData[] = [];
+
+  $(".gainer-card").each((i, el) => {
+    if (cards.length >= config.topN) return;
+
+    const $el = $(el);
+    const badges = $el.find(".card-details-badge span");
+    const rarity = badges.length > 0 ? $(badges[0]).text().trim() : "";
+
+    if (!allowedRarities.has(rarity)) return;
+
+    const productId = $el.attr("data-product-id-card") || "";
+    const subType = $el.attr("data-sub-type") || "Holofoil";
+    const price = parseFloat($el.attr("data-current-price") || "0");
+    const changeAmount = parseFloat(
+      $el.attr("data-price-change-amount") || "0"
+    );
+    const changePct = parseFloat(
+      $el.attr("data-price-change-percentage") || "0"
+    );
+    const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
+    const setName = $el.find(".group-link").text().trim();
+
+    // Prefer .card-name from HTML (always present), fall back to JSON-LD
+    const jsonLdItem = jsonLdItems[i]?.item;
+    const htmlName = $el.find(".card-name").text().trim() || $el.find("h3").text().trim();
+    const rawName = htmlName || jsonLdItem?.name || `Card #${productId}`;
+    const name = $("<div>").html(rawName).text();
+    const nameParts = name.split(" - ");
+    const cardName = nameParts[0].trim();
+    const number = cardNumber || nameParts[1]?.trim() || "";
+
+    const imageUrl =
+      jsonLdItem?.image?.replace("_200w", "_400w") ||
+      (productId
+        ? `https://tcgplayer-cdn.tcgplayer.com/product/${productId}_200w.jpg`
+        : undefined);
+    const tcgPlayerUrl =
+      jsonLdItem?.offers?.url ||
+      $el.find("a[href*='tcgplayer.com']").attr("href") ||
+      "";
+
+    cards.push({
+      rank: cards.length + 1,
+      name: cardName,
+      number,
+      setName,
+      rarity,
+      type: subType,
+      price,
+      dollarChange: changeAmount,
+      percentChange: changePct,
+      tcgPlayerUrl,
+      imageUrl,
+    });
+  });
+
+  console.log(
+    `[scraper] Found ${cards.length} high-tier cards in ${config.setSlug}`
+  );
+  return cards;
+}
 
 // CLI entry point
 if (process.argv[1]?.includes("scraper")) {

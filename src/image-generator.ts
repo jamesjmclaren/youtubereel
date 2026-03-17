@@ -93,6 +93,41 @@ function getTheme(name?: string): ThemeColors {
   return THEMES[name ?? "indigo"] ?? THEMES.indigo;
 }
 
+function getCardTheme(card: CardData): ThemeColors {
+  if (card.percentChange < 0) return THEMES.crimson;
+  if (card.percentChange > 100) return THEMES.amber;
+  if (card.percentChange > 30) return THEMES.emerald;
+  return THEMES.indigo;
+}
+
+function drawSparkles(ctx: Ctx) {
+  const stars: [number, number, number][] = [
+    [80, 280, 3], [210, 140, 2], [960, 210, 4], [1010, 460, 2],
+    [45, 680, 3], [140, 510, 2], [930, 590, 3], [1040, 820, 2],
+    [95, 1180, 3], [310, 990, 2], [790, 1070, 4], [1000, 940, 2],
+    [55, 1580, 3], [270, 1490, 2], [880, 1380, 3], [1030, 1640, 2],
+    [155, 1790, 3], [895, 1720, 2], [490, 95, 3], [595, 1880, 2],
+    [680, 400, 2], [380, 720, 3], [760, 1500, 2], [430, 1250, 3],
+  ];
+  for (const [x, y, r] of stars) {
+    ctx.save();
+    ctx.translate(x, y);
+    const outer = r * 2.5;
+    const inner = r * 0.5;
+    ctx.fillStyle = "rgba(255,255,255,0.32)";
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const angle = (i * Math.PI) / 4;
+      const radius = i % 2 === 0 ? outer : inner;
+      if (i === 0) ctx.moveTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+      else ctx.lineTo(Math.cos(angle) * radius, Math.sin(angle) * radius);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 type Ctx = ReturnType<ReturnType<typeof createCanvas>["getContext"]> extends infer T ? T : never;
 
 function drawRoundedRect(ctx: Ctx, x: number, y: number, w: number, h: number, r: number) {
@@ -220,6 +255,7 @@ async function drawCard(
   const dataAreaH = 90;
   const imgH = cardHeight - dataAreaH - imgPad;
 
+  let imageLoaded = false;
   if (card.imageUrl) {
     try {
       const img = await loadImage(card.imageUrl);
@@ -234,11 +270,34 @@ async function drawCard(
       ctx.clip();
       ctx.drawImage(img, drawX, drawY, drawW, drawH);
       ctx.restore();
-    } catch {
-      drawRoundedRect(ctx, imgX, imgY, imgW, imgH, 10);
-      ctx.fillStyle = "rgba(255,255,255,0.03)";
-      ctx.fill();
+      imageLoaded = true;
+    } catch { /* fall through to placeholder */ }
+  }
+  if (!imageLoaded) {
+    // Placeholder: gradient panel with card name
+    const grad = ctx.createLinearGradient(imgX, imgY, imgX + imgW, imgY + imgH);
+    grad.addColorStop(0, theme.glass);
+    grad.addColorStop(1, theme.accentGlow);
+    drawRoundedRect(ctx, imgX, imgY, imgW, imgH, 10);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = theme.glassBorder;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Card name centred in placeholder
+    const nameSize = Math.max(Math.round(cardWidth * 0.07), 11);
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = theme.textMuted;
+    ctx.font = `${nameSize}px ${F}`;
+    ctx.textAlign = "center";
+    const words = card.name.split(" ");
+    const lineH = nameSize + 4;
+    const startTextY = imgY + imgH / 2 - ((words.length - 1) * lineH) / 2;
+    for (let w = 0; w < words.length; w++) {
+      ctx.fillText(words[w], imgX + imgW / 2, startTextY + w * lineH);
     }
+    ctx.restore();
   }
 
   // Rank badge — top-left corner, overlaid on image
@@ -293,29 +352,65 @@ async function drawCard(
   ctx.fillText(dollarText, x + cardWidth / 2, priceY + priceFontSize / 3 + dollarSize + 6);
 }
 
-function drawFooter(ctx: Ctx, theme: ThemeColors) {
-  const today = new Date();
-  const dateStr = today.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
 
-  // Divider line
-  const divW = 200;
-  ctx.fillStyle = theme.glassBorder;
-  drawRoundedRect(ctx, (WIDTH - divW) / 2, HEIGHT - 130, divW, 2, 1);
-  ctx.fill();
+export async function generateTitleSlide(
+  outputPath: string,
+  options: { theme?: string; title?: string; subtitle?: string } = {}
+): Promise<string> {
+  const theme = getTheme(options.theme);
+  const canvas = createCanvas(WIDTH, HEIGHT);
+  const ctx = canvas.getContext("2d");
+
+  drawBackground(ctx, theme);
+  drawSparkles(ctx);
 
   ctx.textAlign = "center";
 
-  ctx.fillStyle = theme.textMuted;
-  ctx.font = `18px ${F}`;
-  ctx.fillText(`tcgmarketnews.com · ${dateStr}`, WIDTH / 2, HEIGHT - 90);
+  // Accent line
+  const lineW = 80;
+  ctx.fillStyle = theme.accent;
+  drawRoundedRect(ctx, (WIDTH - lineW) / 2, HEIGHT * 0.27, lineW, 5, 3);
+  ctx.fill();
 
+  // Main title
   ctx.fillStyle = theme.textWhite;
-  ctx.font = `bold 24px ${F}`;
-  ctx.fillText("@YourChannel", WIDTH / 2, HEIGHT - 55);
+  ctx.font = `bold 88px ${F}`;
+  ctx.fillText(options.title || "TOP MOVERS", WIDTH / 2, HEIGHT * 0.38);
+
+  // Subtitle
+  ctx.fillStyle = theme.accent;
+  ctx.font = `bold 48px ${F}`;
+  ctx.fillText(options.subtitle || "POKEMON TCG", WIDTH / 2, HEIGHT * 0.455);
+
+  // Divider
+  const divW = 320;
+  ctx.fillStyle = theme.glassBorder;
+  drawRoundedRect(ctx, (WIDTH - divW) / 2, HEIGHT * 0.495, divW, 2, 1);
+  ctx.fill();
+
+  // Caption
+  ctx.fillStyle = theme.textMuted;
+  ctx.font = `26px ${F}`;
+  ctx.fillText("Price movers  ·  TCGPlayer data", WIDTH / 2, HEIGHT * 0.535);
+
+  // Faint ghost rank behind
+  ctx.save();
+  ctx.globalAlpha = 0.06;
+  ctx.fillStyle = theme.gold;
+  ctx.font = `bold 320px ${F}`;
+  ctx.fillText("#1", WIDTH / 2, HEIGHT * 0.80);
+  ctx.restore();
+
+  // "STARTING NOW" label
+  ctx.fillStyle = theme.accent;
+  ctx.font = `bold 30px ${F}`;
+  ctx.fillText("STARTING NOW  \u25BA", WIDTH / 2, HEIGHT * 0.885);
+
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const buffer = canvas.toBuffer("image/png");
+  await writeFile(outputPath, buffer);
+  console.log(`[image-gen] Generated title slide`);
+  return outputPath;
 }
 
 export async function generateImage(
@@ -404,8 +499,6 @@ export async function generateImage(
     }
   }
 
-  drawFooter(ctx, theme);
-
   await mkdir(path.dirname(outputPath), { recursive: true });
   const buffer = canvas.toBuffer("image/png");
   await writeFile(outputPath, buffer);
@@ -420,27 +513,43 @@ export async function generateImage(
 export async function generateSlides(
   cards: CardData[],
   outputDir: string,
-  options: { theme?: string; title?: string } = {}
+  options: { theme?: string; title?: string; subtitle?: string; skipPctText?: boolean } = {}
 ): Promise<string[]> {
-  const theme = THEMES[options.theme || "indigo"] || THEMES.indigo;
   await mkdir(outputDir, { recursive: true });
 
   const paths: string[] = [];
 
+  // Intro title slide first
+  const titlePath = path.join(outputDir, "slide-0-title.png");
+  await generateTitleSlide(titlePath, {
+    theme: options.theme,
+    title: options.title,
+    subtitle: options.subtitle,
+  });
+  paths.push(titlePath);
+
   for (const card of cards) {
+    // Dynamic theme per card based on performance
+    const theme = getCardTheme(card);
     const canvas = createCanvas(WIDTH, HEIGHT);
     const ctx = canvas.getContext("2d");
     const isPositive = card.percentChange >= 0;
     const changeColor = isPositive ? theme.positive : theme.negative;
 
-    // Background
     drawBackground(ctx, theme);
+    drawSparkles(ctx);
 
-    // Rank + title at top
+    // Rank badge at top
+    ctx.textAlign = "center";
+
+    // Rank number with glow
+    ctx.save();
+    ctx.shadowColor = theme.gold;
+    ctx.shadowBlur = 30;
     ctx.fillStyle = theme.gold;
     ctx.font = `bold 72px ${F}`;
-    ctx.textAlign = "center";
     ctx.fillText(`#${card.rank}`, WIDTH / 2, 120);
+    ctx.restore();
 
     ctx.fillStyle = theme.textWhite;
     ctx.font = `bold 36px ${F}`;
@@ -452,6 +561,7 @@ export async function generateSlides(
     const imgX = (WIDTH - imgW) / 2;
     const imgY = 220;
 
+    let slideImageLoaded = false;
     if (card.imageUrl) {
       try {
         const img = await loadImage(card.imageUrl);
@@ -464,7 +574,7 @@ export async function generateSlides(
         // Card glow
         ctx.save();
         ctx.shadowColor = isPositive ? theme.accentGlow : "rgba(248, 113, 113, 0.3)";
-        ctx.shadowBlur = 40;
+        ctx.shadowBlur = 50;
         drawRoundedRect(ctx, drawX - 4, drawY - 4, drawW + 8, drawH + 8, 16);
         ctx.fillStyle = "rgba(0,0,0,0.3)";
         ctx.fill();
@@ -475,20 +585,40 @@ export async function generateSlides(
         ctx.clip();
         ctx.drawImage(img, drawX, drawY, drawW, drawH);
         ctx.restore();
-      } catch {
-        // placeholder
-      }
+        slideImageLoaded = true;
+      } catch { /* fall through to placeholder */ }
+    }
+    if (!slideImageLoaded) {
+      // Gradient placeholder with card name
+      const grad = ctx.createLinearGradient(imgX, imgY, imgX + imgW, imgY + imgH);
+      grad.addColorStop(0, theme.glass);
+      grad.addColorStop(1, theme.accentGlow);
+      drawRoundedRect(ctx, imgX, imgY, imgW, imgH, 16);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.strokeStyle = theme.glassBorder;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = theme.textMuted;
+      ctx.font = `bold 36px ${F}`;
+      ctx.textAlign = "center";
+      const words = card.name.split(" ");
+      const lineH = 44;
+      const startY = imgY + imgH / 2 - ((words.length - 1) * lineH) / 2;
+      words.forEach((w, i) => ctx.fillText(w, WIDTH / 2, startY + i * lineH));
     }
 
-    // Price section below card
+    // Data section below card
     const dataY = imgY + imgH + 60;
 
-    // Percentage — huge
-    ctx.fillStyle = changeColor;
-    ctx.font = `bold 120px ${F}`;
-    ctx.textAlign = "center";
-    const pctText = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
-    ctx.fillText(pctText, WIDTH / 2, dataY + 100);
+    // Percentage — huge (skip if FFmpeg will draw it via count-up animation)
+    if (!options.skipPctText) {
+      ctx.fillStyle = changeColor;
+      ctx.font = `bold 120px ${F}`;
+      ctx.textAlign = "center";
+      const pctText = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
+      ctx.fillText(pctText, WIDTH / 2, dataY + 100);
+    }
 
     // Price
     ctx.fillStyle = theme.textWhite;
@@ -498,7 +628,7 @@ export async function generateSlides(
     // Dollar change
     ctx.fillStyle = changeColor;
     ctx.font = `36px ${F}`;
-    const dollarText = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
+    const dollarText = `${isPositive ? "\u2191" : "\u2193"} $${Math.abs(card.dollarChange).toFixed(2)}`;
     ctx.fillText(dollarText, WIDTH / 2, dataY + 235);
 
     // Card name + set at bottom
