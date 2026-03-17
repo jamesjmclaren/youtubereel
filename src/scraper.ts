@@ -105,8 +105,13 @@ export async function scrapeTopCards(
     const cardName = nameParts[0].trim();
     const number = htmlCard.cardNumber || nameParts[1]?.trim() || "";
 
-    // Get higher-res image from TCGPlayer CDN (replace _200w with _400w)
-    const imageUrl = jsonLdItem?.image?.replace("_200w", "_400w");
+    // Get image URL: prefer JSON-LD, fall back to constructing from productId
+    // TCGPlayer CDN pattern: https://tcgplayer-cdn.tcgplayer.com/product/{id}_400w.jpg
+    const imageUrl =
+      jsonLdItem?.image?.replace("_200w", "_400w") ||
+      (htmlCard.productId
+        ? `https://tcgplayer-cdn.tcgplayer.com/product/${htmlCard.productId}_400w.jpg`
+        : undefined);
     const rarity = jsonLdItem?.additionalProperty?.value || "";
     const tcgPlayerUrl = jsonLdItem?.offers?.url || "";
 
