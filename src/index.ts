@@ -1,7 +1,8 @@
 import { mkdir, writeFile, readdir } from "fs/promises";
 import { scrapeTopCards, downloadCardImages } from "./scraper.js";
 import { generateImage, generateSlides } from "./image-generator.js";
-import { renderVideo, renderSlideshow } from "./video-renderer.js";
+import type { CardData } from "./types.js";
+import { renderVideo, renderSlideshow, videoDuration } from "./video-renderer.js";
 import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
@@ -42,20 +43,39 @@ async function run(
     }
   } catch { /* use default */ }
 
+  // Check that at least half the cards have successfully downloaded images
+  const cardsWithImages = cards.filter((c) => c.imageUrl && !c.imageUrl.startsWith("http"));
+  if (cardsWithImages.length < Math.ceil(cards.length / 2)) {
+    console.error(
+      `[pipeline] Only ${cardsWithImages.length}/${cards.length} card images downloaded. Aborting to avoid publishing a video without images.`
+    );
+    process.exit(1);
+  }
+
+  const duration = videoDuration(cards.length);
+
   // Alternate between grid and slideshow style (50/50)
   const useSlideshow = Math.random() > 0.5;
   const videoPath = `${runDir}/short.mp4`;
 
   if (useSlideshow) {
+    // Slideshow: #5 → #1 countdown order for maximum drama
+    const sortedCards = [...cards].sort((a, b) => b.rank - a.rank);
+
     // Slideshow: one card at a time
     console.log("\n━━━ Step 3: Generating slides ━━━");
-    const slidePaths = await generateSlides(cards, `${runDir}/slides`, {
+    const slidePaths = await generateSlides(sortedCards, `${runDir}/slides`, {
       theme: preset?.theme || "indigo",
       title: preset?.title,
+      subtitle: preset?.subtitle,
+      skipPctText: true, // FFmpeg will draw animated count-up % overlay
     });
 
+    // slideCards: null = intro title slide, then cards in sorted order
+    const slideCards: Array<CardData | null> = [null, ...sortedCards];
+
     console.log("\n━━━ Step 4: Rendering slideshow video ━━━");
-    await renderSlideshow(slidePaths, videoPath, musicPath);
+    await renderSlideshow(slidePaths, videoPath, musicPath, duration, { slideCards });
   } else {
     // Grid: all cards on one image
     console.log("\n━━━ Step 3: Generating thumbnail ━━━");
@@ -68,7 +88,7 @@ async function run(
     });
 
     console.log("\n━━━ Step 4: Rendering video ━━━");
-    await renderVideo(imagePath, videoPath, musicPath);
+    await renderVideo(imagePath, videoPath, musicPath, duration);
   }
 
   // Step 5: Upload
