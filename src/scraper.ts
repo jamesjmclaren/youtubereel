@@ -74,7 +74,6 @@ export async function scrapeTopCards(
     changePct: number;
     setName: string;
     cardNumber: string;
-    imageUrl: string | undefined;
   }> = [];
 
   $(".gainer-card").each((_, el) => {
@@ -91,17 +90,7 @@ export async function scrapeTopCards(
     const badges = $el.find(".card-details-badge span");
     const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
 
-    // Image URL: find the card artwork img (must be an absolute CDN URL, not a logo).
-    // JSON-LD does not contain image fields on this page.
-    // Upgrade 200w → 400w for better quality.
-    const imgSrc = $el.find("img").toArray()
-      .map((el) => $(el).attr("src") ?? "")
-      .find((src) => src.startsWith("http"));
-    const imageUrl = imgSrc
-      ? imgSrc.replace("_200w", "_400w")
-      : (productId ? `https://tcgplayer-cdn.tcgplayer.com/product/${productId}_200w.jpg` : undefined);
-
-    htmlCards.push({ productId, subType, price, changeAmount, changePct, setName, cardNumber, imageUrl });
+    htmlCards.push({ productId, subType, price, changeAmount, changePct, setName, cardNumber });
   });
 
   // 3. Merge JSON-LD + HTML data, taking the top N
@@ -111,13 +100,20 @@ export async function scrapeTopCards(
     const htmlCard = htmlCards[i];
     const jsonLdItem = jsonLdItems[i]?.item;
 
-    const name = jsonLdItem?.name || `Card #${htmlCard.productId}`;
+    const rawName = jsonLdItem?.name || `Card #${htmlCard.productId}`;
+    // Decode HTML entities (e.g. &#39; → ')
+    const name = $("<div>").html(rawName).text();
     const nameParts = name.split(" - ");
     const cardName = nameParts[0].trim();
     const number = htmlCard.cardNumber || nameParts[1]?.trim() || "";
 
-    // Image URL comes from the HTML <img> tag (scraped above) — JSON-LD has no images.
-    const imageUrl = htmlCard.imageUrl;
+    // Image: prefer JSON-LD (works when present), else construct from productId.
+    // TCGPlayer CDN pattern: tcgplayer-cdn.tcgplayer.com/product/{id}_200w.jpg
+    const imageUrl =
+      jsonLdItem?.image?.replace("_200w", "_400w") ||
+      (htmlCard.productId
+        ? `https://tcgplayer-cdn.tcgplayer.com/product/${htmlCard.productId}_200w.jpg`
+        : undefined);
     const rarity = jsonLdItem?.additionalProperty?.value || "";
     const tcgPlayerUrl = jsonLdItem?.offers?.url || "";
 
@@ -161,28 +157,30 @@ export async function downloadCardImages(
     const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
     let downloaded = false;
 
-    for (let attempt = 1; attempt <= 3 && !downloaded; attempt++) {
-      try {
-        if (attempt > 1) {
-          console.log(`[scraper] Retry ${attempt}/3 for: ${card.name}`);
-          await new Promise((r) => setTimeout(r, attempt * 600));
-        } else {
-          console.log(`[scraper] Downloading image for: ${card.name}`);
+    // Try the URL as-is, then fall back to _200w if _400w returns non-200
+    const urlsToTry = [card.imageUrl];
+    if (card.imageUrl.includes("_400w")) {
+      urlsToTry.push(card.imageUrl.replace("_400w", "_200w"));
+    }
+
+    outer: for (const url of urlsToTry) {
+      for (let attempt = 1; attempt <= 2 && !downloaded; attempt++) {
+        try {
+          if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
+          const imgRes = await fetch(url, { headers: { "User-Agent": UA } });
+          if (imgRes.ok) {
+            const buffer = Buffer.from(await imgRes.arrayBuffer());
+            await writeFile(imgPath, buffer);
+            results.push({ ...card, imageUrl: imgPath });
+            console.log(`[scraper] Saved image for ${card.name} (${url})`);
+            downloaded = true;
+            break outer;
+          } else {
+            console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} — ${url}`);
+          }
+        } catch (err) {
+          console.warn(`[scraper] Fetch error for ${card.name} (${url}):`, (err as Error).message);
         }
-        const imgRes = await fetch(card.imageUrl, {
-          headers: { "User-Agent": UA },
-        });
-        if (imgRes.ok) {
-          const buffer = Buffer.from(await imgRes.arrayBuffer());
-          await writeFile(imgPath, buffer);
-          results.push({ ...card, imageUrl: imgPath });
-          console.log(`[scraper] Saved image for ${card.name}`);
-          downloaded = true;
-        } else {
-          console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} (attempt ${attempt})`);
-        }
-      } catch (err) {
-        console.warn(`[scraper] Error downloading image for ${card.name} (attempt ${attempt}):`, err);
       }
     }
 
