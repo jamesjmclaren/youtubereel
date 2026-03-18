@@ -212,19 +212,19 @@ function drawTitle(ctx: Ctx, theme: ThemeColors, period: string, title?: string,
 
   // Main title
   ctx.fillStyle = theme.textWhite;
-  ctx.font = `bold 56px ${F}`;
+  ctx.font = `bold 68px ${F}`;
   ctx.textAlign = "center";
-  ctx.fillText(title ?? "POKEMON TCG", WIDTH / 2, 110);
+  ctx.fillText(title ?? "POKEMON TCG", WIDTH / 2, 115);
 
   // Subtitle with period
-  ctx.font = `bold 42px ${F}`;
+  ctx.font = `bold 46px ${F}`;
   ctx.fillStyle = theme.accent;
-  ctx.fillText(subtitle ?? `TOP 5 MOVERS — ${periodLabel}`, WIDTH / 2, 165);
+  ctx.fillText(subtitle ?? `TOP 5 MOVERS — ${periodLabel}`, WIDTH / 2, 175);
 
   // Description line
   ctx.fillStyle = theme.textMuted;
   ctx.font = `20px ${F}`;
-  ctx.fillText("Biggest price gainers · $100+ singles · TCGPlayer", WIDTH / 2, 200);
+  ctx.fillText("Biggest price movers · TCGPlayer data", WIDTH / 2, 210);
 }
 
 async function drawCard(
@@ -344,12 +344,14 @@ async function drawCard(
   ctx.textAlign = "center";
   ctx.fillText(`$${card.price.toFixed(2)}`, x + cardWidth / 2, priceY + priceFontSize / 3);
 
-  // Dollar change — small, muted, below price
+  // Dollar change + percent — small, below price
   const dollarSize = Math.round(cardWidth * 0.065);
-  ctx.font = `${dollarSize}px ${F}`;
+  ctx.font = `bold ${dollarSize}px ${F}`;
   ctx.fillStyle = changeColor;
-  const dollarText = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
-  ctx.fillText(dollarText, x + cardWidth / 2, priceY + priceFontSize / 3 + dollarSize + 6);
+  const pctLabel = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
+  const dollarLabel = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
+  const changeText = `${pctLabel}  ${dollarLabel}`;
+  ctx.fillText(changeText, x + cardWidth / 2, priceY + priceFontSize / 3 + dollarSize + 6);
 }
 
 
@@ -374,13 +376,13 @@ export async function generateTitleSlide(
 
   // Main title
   ctx.fillStyle = theme.textWhite;
-  ctx.font = `bold 88px ${F}`;
+  ctx.font = `bold 100px ${F}`;
   ctx.fillText(options.title || "TOP MOVERS", WIDTH / 2, HEIGHT * 0.38);
 
   // Subtitle
   ctx.fillStyle = theme.accent;
-  ctx.font = `bold 48px ${F}`;
-  ctx.fillText(options.subtitle || "POKEMON TCG", WIDTH / 2, HEIGHT * 0.455);
+  ctx.font = `bold 54px ${F}`;
+  ctx.fillText(options.subtitle || "POKEMON TCG", WIDTH / 2, HEIGHT * 0.46);
 
   // Divider
   const divW = 320;
@@ -552,7 +554,7 @@ export async function generateSlides(
     ctx.restore();
 
     ctx.fillStyle = theme.textWhite;
-    ctx.font = `bold 36px ${F}`;
+    ctx.font = `bold 42px ${F}`;
     ctx.fillText(options.title || "TOP MOVERS", WIDTH / 2, 175);
 
     // Large card image in center
@@ -631,14 +633,10 @@ export async function generateSlides(
     const dollarText = `${isPositive ? "\u2191" : "\u2193"} $${Math.abs(card.dollarChange).toFixed(2)}`;
     ctx.fillText(dollarText, WIDTH / 2, dataY + 235);
 
-    // Card name + set at bottom
-    ctx.fillStyle = theme.textWhite;
-    ctx.font = `bold 32px ${F}`;
-    ctx.fillText(card.name, WIDTH / 2, HEIGHT - 140);
-
+    // Set name only at bottom (no product name)
     ctx.fillStyle = theme.textMuted;
-    ctx.font = `22px ${F}`;
-    ctx.fillText(card.setName, WIDTH / 2, HEIGHT - 100);
+    ctx.font = `24px ${F}`;
+    ctx.fillText(card.setName, WIDTH / 2, HEIGHT - 110);
 
     const slidePath = path.join(outputDir, `slide-${card.rank}.png`);
     await writeFile(slidePath, canvas.toBuffer("image/png"));

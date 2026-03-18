@@ -4,8 +4,8 @@ import { discoverLatestSets } from "./scraper.js";
 export const CONTENT_PRESETS: ContentPreset[] = [
   {
     name: "weekly-movers-premium",
-    title: "Top 5 Movers This Week",
-    subtitle: "Premium cards with the biggest gains",
+    title: "WEEKLY WINNERS",
+    subtitle: "Cards skyrocketing this week",
     direction: "gainers",
     period: "7d",
     priceFilter: "over_100",
@@ -14,8 +14,8 @@ export const CONTENT_PRESETS: ContentPreset[] = [
   },
   {
     name: "monthly-movers-premium",
-    title: "Top 5 Movers This Month",
-    subtitle: "Premium cards trending up this month",
+    title: "MONTHLY SURGE",
+    subtitle: "Biggest gains this month",
     direction: "gainers",
     period: "30d",
     priceFilter: "over_100",
@@ -24,8 +24,8 @@ export const CONTENT_PRESETS: ContentPreset[] = [
   },
   {
     name: "weekly-biggest-drops",
-    title: "Top 5 Biggest Drops This Week",
-    subtitle: "Cards that lost the most value this week",
+    title: "PRICE CRASH",
+    subtitle: "Biggest losers this week",
     direction: "losers",
     period: "7d",
     priceFilter: "over_100",
@@ -34,8 +34,8 @@ export const CONTENT_PRESETS: ContentPreset[] = [
   },
   {
     name: "budget-movers",
-    title: "Top 5 Budget Movers This Week",
-    subtitle: "Affordable cards on the rise",
+    title: "BUDGET GEMS",
+    subtitle: "Sleeper picks heating up",
     direction: "gainers",
     period: "7d",
     priceFilter: "5_25",
@@ -44,8 +44,8 @@ export const CONTENT_PRESETS: ContentPreset[] = [
   },
   {
     name: "daily-hot",
-    title: "Top 5 Hottest Cards Today",
-    subtitle: "Today's biggest price surges",
+    title: "ON FIRE TODAY",
+    subtitle: "Cards exploding right now",
     direction: "gainers",
     period: "24h",
     priceFilter: "over_100",
@@ -54,8 +54,8 @@ export const CONTENT_PRESETS: ContentPreset[] = [
   },
   {
     name: "monthly-drops",
-    title: "Top 5 Monthly Drops",
-    subtitle: "Cards that fell the most this month",
+    title: "MONTHLY DROPS",
+    subtitle: "Cards tanking this month",
     direction: "losers",
     period: "30d",
     priceFilter: "over_100",
@@ -64,8 +64,8 @@ export const CONTENT_PRESETS: ContentPreset[] = [
   },
   {
     name: "weekly-movers-all",
-    title: "Top 10 Biggest Movers",
-    subtitle: "All price ranges, biggest weekly gains",
+    title: "TOP 10 MOVERS",
+    subtitle: "Biggest gains across all prices",
     direction: "gainers",
     period: "7d",
     priceFilter: "",
@@ -84,8 +84,8 @@ export async function buildSetPresets(count = 2): Promise<ContentPreset[]> {
   const sets = await discoverLatestSets(count);
   return sets.map((set, i) => ({
     name: `set-${set.slug}`,
-    title: `${set.name} Top 5 Movers`,
-    subtitle: `Hottest high-tier cards right now`,
+    title: `${set.name.toUpperCase()}`,
+    subtitle: `Hottest cards right now`,
     direction: "gainers" as const,
     period: "24h" as const,
     priceFilter: "",
