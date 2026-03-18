@@ -247,12 +247,18 @@ async function drawCard(
   ctx.lineWidth = 1;
   ctx.stroke();
 
+  // Compute data-area font sizes up front so we can size the image region
+  const nameSize = Math.round(cardWidth * 0.075);
+  const priceFontSize = Math.round(cardWidth * 0.11);
+  const changeSize = Math.round(cardWidth * 0.06);
+  // 8 = top offset, 4 = gap after name, 4 = gap after price, 10 = bottom pad
+  const dataAreaH = Math.max(115, nameSize + priceFontSize + changeSize + 26);
+
   // Card image — fills most of the container
   const imgPad = 10;
   const imgX = x + imgPad;
   const imgY = y + imgPad;
   const imgW = cardWidth - imgPad * 2;
-  const dataAreaH = 115;
   const imgH = cardHeight - dataAreaH - imgPad;
 
   let imageLoaded = false;
@@ -341,7 +347,6 @@ async function drawCard(
   const dataStartY = y + cardHeight - dataAreaH + 8;
 
   // Card name — truncate if too long
-  const nameSize = Math.round(cardWidth * 0.075);
   ctx.font = `bold ${nameSize}px ${F}`;
   ctx.fillStyle = theme.textWhite;
   ctx.textAlign = "center";
@@ -353,13 +358,11 @@ async function drawCard(
   ctx.fillText(displayName, centerX, dataStartY + nameSize);
 
   // Price
-  const priceFontSize = Math.round(cardWidth * 0.11);
   ctx.font = `bold ${priceFontSize}px ${F}`;
   ctx.fillStyle = theme.textWhite;
   ctx.fillText(`$${card.price.toFixed(2)}`, centerX, dataStartY + nameSize + priceFontSize + 4);
 
   // % change + dollar change on same line
-  const changeSize = Math.round(cardWidth * 0.06);
   ctx.font = `bold ${changeSize}px ${F}`;
   ctx.fillStyle = changeColor;
   const pctLabel = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
