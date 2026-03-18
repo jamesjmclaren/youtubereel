@@ -1,5 +1,5 @@
 import type { ContentPreset } from "./types.js";
-import { discoverLatestSets } from "./scraper.js";
+import { discoverLatestSets, scrapeSetCards } from "./scraper.js";
 
 export const CONTENT_PRESETS: ContentPreset[] = [
   {
@@ -81,23 +81,48 @@ const SET_THEMES = ["indigo", "emerald", "amber", "crimson"];
  * tcgmarketnews.com. Filters to high-tier rarities (IR, SIR, UR, DR).
  */
 export async function buildSetPresets(count = 2): Promise<ContentPreset[]> {
-  const sets = await discoverLatestSets(count);
-  return sets.map((set, i) => ({
-    name: `set-${set.slug}`,
-    title: `${set.name.toUpperCase()}`,
-    subtitle: `Hottest cards right now`,
-    direction: "gainers" as const,
-    period: "24h" as const,
-    priceFilter: "",
-    topN: 5,
-    theme: SET_THEMES[i % SET_THEMES.length],
-    setSlug: set.slug,
-    rarityFilter: [
-      "Illustration Rare",
-      "Special Illustration Rare",
-      "Ultra Rare",
-    ],
-  }));
+  // Fetch extra sets so we can skip any that are too new / have no cards yet
+  const sets = await discoverLatestSets(count + 3);
+  const presets: ContentPreset[] = [];
+
+  for (const set of sets) {
+    if (presets.length >= count) break;
+    // Quick probe: try scraping the set and skip it if no cards are found
+    try {
+      const probe = await scrapeSetCards({
+        setSlug: set.slug,
+        period: "24h",
+        topN: 1,
+        rarityFilter: ["Illustration Rare", "Special Illustration Rare", "Ultra Rare"],
+      });
+      if (probe.length === 0) {
+        console.log(`[presets] Skipping set "${set.name}" — no cards with price data yet`);
+        continue;
+      }
+    } catch {
+      console.log(`[presets] Skipping set "${set.name}" — failed to fetch`);
+      continue;
+    }
+
+    presets.push({
+      name: `set-${set.slug}`,
+      title: `${set.name.toUpperCase()}`,
+      subtitle: `Hottest cards right now`,
+      direction: "gainers" as const,
+      period: "24h" as const,
+      priceFilter: "",
+      topN: 5,
+      theme: SET_THEMES[presets.length % SET_THEMES.length],
+      setSlug: set.slug,
+      rarityFilter: [
+        "Illustration Rare",
+        "Special Illustration Rare",
+        "Ultra Rare",
+      ],
+    });
+  }
+
+  return presets;
 }
 
 /**
