@@ -4,7 +4,22 @@ import path from "path";
 import type { CardData, PipelineConfig } from "./types.js";
 
 const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/** Browser-like headers to avoid 403s from CDNs (CloudFront, etc.) */
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": UA,
+  Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"macOS"',
+  "Sec-Fetch-Dest": "image",
+  "Sec-Fetch-Mode": "no-cors",
+  "Sec-Fetch-Site": "cross-site",
+  Referer: "https://www.tcgplayer.com/",
+};
 
 const PERIOD_MAP: Record<PipelineConfig["period"], string> = {
   "24h": "24h",
@@ -167,7 +182,7 @@ export async function downloadCardImages(
       for (let attempt = 1; attempt <= 2 && !downloaded; attempt++) {
         try {
           if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
-          const imgRes = await fetch(url, { headers: { "User-Agent": UA } });
+          const imgRes = await fetch(url, { headers: BROWSER_HEADERS });
           if (imgRes.ok) {
             const buffer = Buffer.from(await imgRes.arrayBuffer());
             await writeFile(imgPath, buffer);
