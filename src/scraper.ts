@@ -116,7 +116,8 @@ export async function scrapeTopCards(
     const htmlCard = htmlCards[i];
     const jsonLdItem = jsonLdItems[i]?.item;
 
-    const rawName = jsonLdItem?.name || `Card #${htmlCard.productId}`;
+    const rawName = jsonLdItem?.name || "";
+    if (!rawName) continue; // Skip cards with no real name
     // Decode HTML entities (e.g. &#39; → ')
     const name = $("<div>").html(rawName).text();
     const nameParts = name.split(" - ");
@@ -460,7 +461,11 @@ export async function scrapeSetCards(config: {
 
     const jsonLdItem = jsonLdItems[i]?.item;
     const htmlName = $el.find(".card-name").text().trim() || $el.find("h3").text().trim();
-    const rawName = htmlName || jsonLdItem?.name || `Card #${productId}`;
+    const rawName = htmlName || jsonLdItem?.name || "";
+    if (!rawName || rawName.startsWith("Card #")) {
+      // Skip cards with no real name (only product ID)
+      return;
+    }
     const name = $("<div>").html(rawName).text();
     const nameParts = name.split(" - ");
     const cardName = nameParts[0].trim();

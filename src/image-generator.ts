@@ -252,7 +252,7 @@ async function drawCard(
   const imgX = x + imgPad;
   const imgY = y + imgPad;
   const imgW = cardWidth - imgPad * 2;
-  const dataAreaH = 90;
+  const dataAreaH = 115;
   const imgH = cardHeight - dataAreaH - imgPad;
 
   let imageLoaded = false;
@@ -336,22 +336,36 @@ async function drawCard(
   ctx.textAlign = "center";
   ctx.fillText(pctText, pctX + pctW / 2, pctY + pctSize + 2);
 
-  // Price — below the image, centered in the data area
-  const priceY = y + cardHeight - dataAreaH / 2;
-  const priceFontSize = Math.round(cardWidth * 0.12);
-  ctx.font = `bold ${priceFontSize}px ${F}`;
+  // Data area below image: card name, price, % change + dollar change
+  const centerX = x + cardWidth / 2;
+  const dataStartY = y + cardHeight - dataAreaH + 8;
+
+  // Card name — truncate if too long
+  const nameSize = Math.round(cardWidth * 0.075);
+  ctx.font = `bold ${nameSize}px ${F}`;
   ctx.fillStyle = theme.textWhite;
   ctx.textAlign = "center";
-  ctx.fillText(`$${card.price.toFixed(2)}`, x + cardWidth / 2, priceY + priceFontSize / 3);
+  let displayName = card.name;
+  while (ctx.measureText(displayName).width > cardWidth - 16 && displayName.length > 8) {
+    displayName = displayName.slice(0, -1);
+  }
+  if (displayName !== card.name) displayName += "…";
+  ctx.fillText(displayName, centerX, dataStartY + nameSize);
 
-  // Dollar change + percent — small, below price
-  const dollarSize = Math.round(cardWidth * 0.065);
-  ctx.font = `bold ${dollarSize}px ${F}`;
+  // Price
+  const priceFontSize = Math.round(cardWidth * 0.11);
+  ctx.font = `bold ${priceFontSize}px ${F}`;
+  ctx.fillStyle = theme.textWhite;
+  ctx.fillText(`$${card.price.toFixed(2)}`, centerX, dataStartY + nameSize + priceFontSize + 4);
+
+  // % change + dollar change on same line
+  const changeSize = Math.round(cardWidth * 0.06);
+  ctx.font = `bold ${changeSize}px ${F}`;
   ctx.fillStyle = changeColor;
   const pctLabel = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
   const dollarLabel = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
   const changeText = `${pctLabel}  ${dollarLabel}`;
-  ctx.fillText(changeText, x + cardWidth / 2, priceY + priceFontSize / 3 + dollarSize + 6);
+  ctx.fillText(changeText, centerX, dataStartY + nameSize + priceFontSize + changeSize + 10);
 }
 
 

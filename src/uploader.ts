@@ -95,13 +95,24 @@ function generateTitle(
 
   const topCard = cards[0];
   const topChange = `+${topCard.percentChange.toFixed(0)}%`;
+  const setName = topCard.setName || "";
+  const hasSet = setName.length > 0;
 
   const titles = [
-    `${topCard.name} Up ${topChange}! Top 5 Pokémon Card Gainers ${periodLabel} #Shorts`,
-    `Top 5 Pokémon Cards EXPLODING in Price ${periodLabel} 📈 #Shorts`,
-    `These Pokémon Cards Are SKYROCKETING! ${periodLabel} Top Gainers #Shorts`,
-    `${topCard.name} ${topChange} 🚀 Top 5 Price Gainers ${periodLabel} #Shorts`,
+    `${topCard.name} Up ${topChange}! Pokémon Card Gainers ${periodLabel} #Shorts`,
+    `Pokémon Cards EXPLODING in Price ${periodLabel} 📈 #Shorts`,
+    `These Pokémon Cards Are SKYROCKETING ${periodLabel}! 🚀 #Shorts`,
+    `${topCard.name} ${topChange} — Don't Sleep on These Cards! #Shorts`,
     `Pokémon Cards You NEED Before They Moon 🌙 ${periodLabel} #Shorts`,
+    `${topChange} in ${periodLabel}?! ${topCard.name} Is Moving 📈 #Shorts`,
+    `Who Saw ${topCard.name} Coming? ${topChange} ${periodLabel} 🔥 #Shorts`,
+    `The Pokémon Cards Nobody's Talking About ${periodLabel} #Shorts`,
+    ...(hasSet
+      ? [
+          `${setName} Cards Are POPPING OFF ${periodLabel} 🔥 #Shorts`,
+          `Best ${setName} Pulls to Invest In Right Now #Shorts`,
+        ]
+      : []),
   ];
 
   // Filter out previously used titles to avoid duplicates in multi-video runs
