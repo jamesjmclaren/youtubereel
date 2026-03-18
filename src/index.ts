@@ -7,6 +7,9 @@ import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday, getPresetForTodayWithSets, buildSetPresets } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
 
+/** Titles used in this session — prevents duplicate titles across dual-mode videos */
+const usedTitles: string[] = [];
+
 async function run(
   config: PipelineConfig,
   preset: ContentPreset | null,
@@ -107,7 +110,8 @@ async function run(
   // Step 5: Upload
   if (!skipUpload) {
     console.log("\n━━━ Step 5: Uploading to YouTube ━━━");
-    const url = await uploadToYouTube(videoPath, cards, config.period);
+    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles);
+    usedTitles.push(title);
     console.log(`\n✅ Done! Video live at: ${url}`);
   } else {
     console.log("\n━━━ Step 5: Skipped upload (--no-upload) ━━━");

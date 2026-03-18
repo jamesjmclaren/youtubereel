@@ -79,7 +79,11 @@ async function getAuthenticatedClient() {
   }
 }
 
-function generateTitle(cards: CardData[], period: string): string {
+function generateTitle(
+  cards: CardData[],
+  period: string,
+  excludeTitles: string[] = []
+): string {
   const periodLabel =
     period === "24h"
       ? "24 Hours"
@@ -100,7 +104,11 @@ function generateTitle(cards: CardData[], period: string): string {
     `Pokémon Cards You NEED Before They Moon 🌙 ${periodLabel} #Shorts`,
   ];
 
-  return titles[Math.floor(Math.random() * titles.length)];
+  // Filter out previously used titles to avoid duplicates in multi-video runs
+  const available = titles.filter((t) => !excludeTitles.includes(t));
+  const pool = available.length > 0 ? available : titles;
+
+  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 function generateDescription(cards: CardData[], period: string): string {
@@ -124,12 +132,13 @@ function generateDescription(cards: CardData[], period: string): string {
 export async function uploadToYouTube(
   videoPath: string,
   cards: CardData[],
-  period: string
-): Promise<string> {
+  period: string,
+  excludeTitles: string[] = []
+): Promise<{ url: string; title: string }> {
   const auth = await getAuthenticatedClient();
   const youtube = google.youtube({ version: "v3", auth });
 
-  const title = generateTitle(cards, period);
+  const title = generateTitle(cards, period, excludeTitles);
   const description = generateDescription(cards, period);
 
   console.log(`[uploader] Uploading: ${title}`);
@@ -168,7 +177,7 @@ export async function uploadToYouTube(
   const videoUrl = `https://youtube.com/shorts/${videoId}`;
   console.log(`[uploader] Uploaded! ${videoUrl}`);
 
-  return videoUrl;
+  return { url: videoUrl, title };
 }
 
 // CLI entry point

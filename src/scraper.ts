@@ -377,6 +377,17 @@ const HIGH_TIER_RARITIES = new Set([
   "Ultra Rare",
 ]);
 
+/** Broader rarities to fall back on when high-tier filter yields too few cards */
+const FALLBACK_RARITIES = new Set([
+  "Illustration Rare",
+  "Special Illustration Rare",
+  "Ultra Rare",
+  "Double Rare",
+  "Hyper Rare",
+  "ACE SPEC Rare",
+  "Rare",
+]);
+
 /**
  * Scrape top movers from a specific set's page, filtered by rarity.
  */
@@ -408,20 +419,32 @@ export async function scrapeSetCards(config: {
     jsonLdItems = jsonLd.itemListElement || [];
   } catch {}
 
-  const allowedRarities = config.rarityFilter
+  const primaryRarities = config.rarityFilter
     ? new Set(config.rarityFilter)
     : HIGH_TIER_RARITIES;
 
-  const cards: CardData[] = [];
+  // Parse all cards from the page once, then filter by rarity
+  interface ParsedCard {
+    rarity: string;
+    productId: string;
+    subType: string;
+    price: number;
+    changeAmount: number;
+    changePct: number;
+    cardNumber: string;
+    setName: string;
+    cardName: string;
+    number: string;
+    imageUrl: string | undefined;
+    tcgPlayerUrl: string;
+  }
+
+  const allParsed: ParsedCard[] = [];
 
   $(".gainer-card").each((i, el) => {
-    if (cards.length >= config.topN) return;
-
     const $el = $(el);
     const badges = $el.find(".card-details-badge span");
     const rarity = badges.length > 0 ? $(badges[0]).text().trim() : "";
-
-    if (!allowedRarities.has(rarity)) return;
 
     const productId = $el.attr("data-product-id-card") || "";
     const subType = $el.attr("data-sub-type") || "Holofoil";
@@ -435,7 +458,6 @@ export async function scrapeSetCards(config: {
     const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
     const setName = $el.find(".group-link").text().trim();
 
-    // Prefer .card-name from HTML (always present), fall back to JSON-LD
     const jsonLdItem = jsonLdItems[i]?.item;
     const htmlName = $el.find(".card-name").text().trim() || $el.find("h3").text().trim();
     const rawName = htmlName || jsonLdItem?.name || `Card #${productId}`;
@@ -454,23 +476,44 @@ export async function scrapeSetCards(config: {
       $el.find("a[href*='tcgplayer.com']").attr("href") ||
       "";
 
-    cards.push({
-      rank: cards.length + 1,
-      name: cardName,
-      number,
-      setName,
-      rarity,
-      type: subType,
-      price,
-      dollarChange: changeAmount,
-      percentChange: changePct,
-      tcgPlayerUrl,
-      imageUrl,
+    allParsed.push({
+      rarity, productId, subType, price, changeAmount, changePct,
+      cardNumber, setName, cardName, number, imageUrl, tcgPlayerUrl,
     });
   });
 
+  // Filter by primary rarities first; if too few, widen to fallback rarities
+  let filtered = allParsed.filter((c) => primaryRarities.has(c.rarity));
+  if (filtered.length < config.topN) {
+    console.warn(
+      `[scraper] Only ${filtered.length} high-tier cards found — widening rarity filter`
+    );
+    filtered = allParsed.filter((c) => FALLBACK_RARITIES.has(c.rarity));
+  }
+  // If still too few, use all cards from the page
+  if (filtered.length < config.topN) {
+    console.warn(
+      `[scraper] Still only ${filtered.length} cards — using all rarities`
+    );
+    filtered = allParsed;
+  }
+
+  const cards: CardData[] = filtered.slice(0, config.topN).map((c, i) => ({
+    rank: i + 1,
+    name: c.cardName,
+    number: c.number,
+    setName: c.setName,
+    rarity: c.rarity,
+    type: c.subType,
+    price: c.price,
+    dollarChange: c.changeAmount,
+    percentChange: c.changePct,
+    tcgPlayerUrl: c.tcgPlayerUrl,
+    imageUrl: c.imageUrl,
+  }));
+
   console.log(
-    `[scraper] Found ${cards.length} high-tier cards in ${config.setSlug}`
+    `[scraper] Found ${cards.length} cards in ${config.setSlug} (rarities: ${[...new Set(cards.map((c) => c.rarity))].join(", ")})`
   );
   return cards;
 }
