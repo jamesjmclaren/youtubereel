@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
+import { chromium, type Browser } from "playwright";
 import type { CardData, PipelineConfig } from "./types.js";
 
 const UA =
@@ -152,7 +153,123 @@ export async function scrapeTopCards(
 }
 
 /**
+ * Try downloading a single image via direct fetch with browser-like headers.
+ * Returns the saved path on success, or null on failure.
+ */
+async function fetchImageDirect(
+  card: CardData,
+  imgPath: string
+): Promise<string | null> {
+  const urlsToTry = [card.imageUrl!];
+  if (card.imageUrl!.includes("_400w")) {
+    urlsToTry.push(card.imageUrl!.replace("_400w", "_200w"));
+  }
+
+  for (const url of urlsToTry) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
+        const imgRes = await fetch(url, { headers: BROWSER_HEADERS });
+        if (imgRes.ok) {
+          const buffer = Buffer.from(await imgRes.arrayBuffer());
+          await writeFile(imgPath, buffer);
+          console.log(`[scraper] Saved image for ${card.name} via fetch (${url})`);
+          return imgPath;
+        }
+        console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} — ${url}`);
+      } catch (err) {
+        console.warn(`[scraper] Fetch error for ${card.name} (${url}):`, (err as Error).message);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Download images that failed direct fetch using a real Playwright browser.
+ * Opens a single browser, navigates to each image URL, and saves the response.
+ */
+async function fetchImagesWithBrowser(
+  failedCards: Array<{ card: CardData; imgPath: string }>,
+): Promise<Map<number, string>> {
+  const saved = new Map<number, string>();
+  let browser: Browser | undefined;
+
+  try {
+    console.log(`[scraper] Launching browser to fetch ${failedCards.length} image(s)…`);
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      userAgent: UA,
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+
+    // Visit TCGPlayer first to pick up any required cookies / JS tokens
+    const warmupPage = await context.newPage();
+    try {
+      await warmupPage.goto("https://www.tcgplayer.com/", {
+        waitUntil: "domcontentloaded",
+        timeout: 15_000,
+      });
+    } catch {
+      console.warn("[scraper] TCGPlayer warmup page timed out — continuing anyway");
+    }
+    await warmupPage.close();
+
+    for (const { card, imgPath } of failedCards) {
+      const urlsToTry = [card.imageUrl!];
+      if (card.imageUrl!.includes("_400w")) {
+        urlsToTry.push(card.imageUrl!.replace("_400w", "_200w"));
+      }
+
+      let success = false;
+      for (const url of urlsToTry) {
+        try {
+          const page = await context.newPage();
+          const response = await page.goto(url, {
+            waitUntil: "load",
+            timeout: 15_000,
+          });
+
+          if (response && response.ok()) {
+            const buffer = await response.body();
+            await writeFile(imgPath, buffer);
+            console.log(`[scraper] Saved image for ${card.name} via browser (${url})`);
+            saved.set(card.rank, imgPath);
+            success = true;
+          } else {
+            console.warn(
+              `[scraper] Browser HTTP ${response?.status()} for ${card.name} — ${url}`
+            );
+          }
+          await page.close();
+          if (success) break;
+        } catch (err) {
+          console.warn(
+            `[scraper] Browser error for ${card.name} (${url}):`,
+            (err as Error).message
+          );
+        }
+      }
+
+      // Small delay between requests
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    await context.close();
+  } catch (err) {
+    console.error("[scraper] Failed to launch browser:", (err as Error).message);
+  } finally {
+    await browser?.close();
+  }
+
+  return saved;
+}
+
+/**
  * Download card images locally for use in image generation.
+ * Tries direct fetch first, then falls back to Playwright browser for failures.
  */
 export async function downloadCardImages(
   cards: CardData[],
@@ -161,7 +278,9 @@ export async function downloadCardImages(
   await mkdir(outputDir, { recursive: true });
 
   const results: CardData[] = [];
+  const failedCards: Array<{ card: CardData; imgPath: string }> = [];
 
+  // Phase 1: Try direct fetch for all cards
   for (const card of cards) {
     if (!card.imageUrl) {
       console.warn(`[scraper] No image URL for ${card.name}`);
@@ -170,42 +289,33 @@ export async function downloadCardImages(
     }
 
     const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
-    let downloaded = false;
+    const savedPath = await fetchImageDirect(card, imgPath);
 
-    // Try the URL as-is, then fall back to _200w if _400w returns non-200
-    const urlsToTry = [card.imageUrl];
-    if (card.imageUrl.includes("_400w")) {
-      urlsToTry.push(card.imageUrl.replace("_400w", "_200w"));
+    if (savedPath) {
+      results.push({ ...card, imageUrl: savedPath });
+    } else {
+      // Mark for browser fallback
+      failedCards.push({ card, imgPath });
+      results.push(card); // placeholder — will be updated if browser succeeds
     }
 
-    outer: for (const url of urlsToTry) {
-      for (let attempt = 1; attempt <= 2 && !downloaded; attempt++) {
-        try {
-          if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
-          const imgRes = await fetch(url, { headers: BROWSER_HEADERS });
-          if (imgRes.ok) {
-            const buffer = Buffer.from(await imgRes.arrayBuffer());
-            await writeFile(imgPath, buffer);
-            results.push({ ...card, imageUrl: imgPath });
-            console.log(`[scraper] Saved image for ${card.name} (${url})`);
-            downloaded = true;
-            break outer;
-          } else {
-            console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} — ${url}`);
-          }
-        } catch (err) {
-          console.warn(`[scraper] Fetch error for ${card.name} (${url}):`, (err as Error).message);
-        }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  // Phase 2: Use Playwright browser for any that failed
+  if (failedCards.length > 0) {
+    console.warn(
+      `[scraper] ${failedCards.length} image(s) failed direct fetch — trying browser fallback`
+    );
+    const browserResults = await fetchImagesWithBrowser(failedCards);
+
+    // Update results for cards that the browser saved successfully
+    for (let i = 0; i < results.length; i++) {
+      const saved = browserResults.get(results[i].rank);
+      if (saved) {
+        results[i] = { ...results[i], imageUrl: saved };
       }
     }
-
-    if (!downloaded) {
-      console.warn(`[scraper] All attempts failed for ${card.name}, using URL fallback`);
-      results.push(card); // keep HTTP URL so canvas can try loading it directly
-    }
-
-    // Small delay between cards
-    await new Promise((r) => setTimeout(r, 300));
   }
 
   return results;
