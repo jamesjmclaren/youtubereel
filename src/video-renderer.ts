@@ -256,9 +256,7 @@ export async function renderSlideshow(
     if (cardSlides.length > 0) {
       const tickerItems = cardSlides.map(c => {
         const sign = c.percentChange >= 0 ? "+" : "";
-        // Sanitise text: remove chars that would break FFmpeg filter string
-        const safeName = c.name.replace(/[':@\\[\]%]/g, " ");
-        return `#${c.rank} ${safeName}  ${sign}${c.percentChange.toFixed(0)}%%  $${c.price.toFixed(2)}`;
+        return `#${c.rank}  ${sign}${c.percentChange.toFixed(0)}%%  $${c.price.toFixed(2)}`;
       });
       const tickerText = tickerItems.join("   *   ") + "   *   ";
       filterParts.push(
