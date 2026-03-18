@@ -1,10 +1,26 @@
 import * as cheerio from "cheerio";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
+import { chromium, type Browser } from "playwright";
 import type { CardData, PipelineConfig } from "./types.js";
 
 const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/** Browser-like headers to avoid 403s from CDNs (CloudFront, etc.) */
+const BROWSER_HEADERS: Record<string, string> = {
+  "User-Agent": UA,
+  Accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"macOS"',
+  "Sec-Fetch-Dest": "image",
+  "Sec-Fetch-Mode": "no-cors",
+  "Sec-Fetch-Site": "cross-site",
+  Referer: "https://www.tcgplayer.com/",
+};
 
 const PERIOD_MAP: Record<PipelineConfig["period"], string> = {
   "24h": "24h",
@@ -137,7 +153,123 @@ export async function scrapeTopCards(
 }
 
 /**
+ * Try downloading a single image via direct fetch with browser-like headers.
+ * Returns the saved path on success, or null on failure.
+ */
+async function fetchImageDirect(
+  card: CardData,
+  imgPath: string
+): Promise<string | null> {
+  const urlsToTry = [card.imageUrl!];
+  if (card.imageUrl!.includes("_400w")) {
+    urlsToTry.push(card.imageUrl!.replace("_400w", "_200w"));
+  }
+
+  for (const url of urlsToTry) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
+        const imgRes = await fetch(url, { headers: BROWSER_HEADERS });
+        if (imgRes.ok) {
+          const buffer = Buffer.from(await imgRes.arrayBuffer());
+          await writeFile(imgPath, buffer);
+          console.log(`[scraper] Saved image for ${card.name} via fetch (${url})`);
+          return imgPath;
+        }
+        console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} — ${url}`);
+      } catch (err) {
+        console.warn(`[scraper] Fetch error for ${card.name} (${url}):`, (err as Error).message);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Download images that failed direct fetch using a real Playwright browser.
+ * Opens a single browser, navigates to each image URL, and saves the response.
+ */
+async function fetchImagesWithBrowser(
+  failedCards: Array<{ card: CardData; imgPath: string }>,
+): Promise<Map<number, string>> {
+  const saved = new Map<number, string>();
+  let browser: Browser | undefined;
+
+  try {
+    console.log(`[scraper] Launching browser to fetch ${failedCards.length} image(s)…`);
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      userAgent: UA,
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+
+    // Visit TCGPlayer first to pick up any required cookies / JS tokens
+    const warmupPage = await context.newPage();
+    try {
+      await warmupPage.goto("https://www.tcgplayer.com/", {
+        waitUntil: "domcontentloaded",
+        timeout: 15_000,
+      });
+    } catch {
+      console.warn("[scraper] TCGPlayer warmup page timed out — continuing anyway");
+    }
+    await warmupPage.close();
+
+    for (const { card, imgPath } of failedCards) {
+      const urlsToTry = [card.imageUrl!];
+      if (card.imageUrl!.includes("_400w")) {
+        urlsToTry.push(card.imageUrl!.replace("_400w", "_200w"));
+      }
+
+      let success = false;
+      for (const url of urlsToTry) {
+        try {
+          const page = await context.newPage();
+          const response = await page.goto(url, {
+            waitUntil: "load",
+            timeout: 15_000,
+          });
+
+          if (response && response.ok()) {
+            const buffer = await response.body();
+            await writeFile(imgPath, buffer);
+            console.log(`[scraper] Saved image for ${card.name} via browser (${url})`);
+            saved.set(card.rank, imgPath);
+            success = true;
+          } else {
+            console.warn(
+              `[scraper] Browser HTTP ${response?.status()} for ${card.name} — ${url}`
+            );
+          }
+          await page.close();
+          if (success) break;
+        } catch (err) {
+          console.warn(
+            `[scraper] Browser error for ${card.name} (${url}):`,
+            (err as Error).message
+          );
+        }
+      }
+
+      // Small delay between requests
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    await context.close();
+  } catch (err) {
+    console.error("[scraper] Failed to launch browser:", (err as Error).message);
+  } finally {
+    await browser?.close();
+  }
+
+  return saved;
+}
+
+/**
  * Download card images locally for use in image generation.
+ * Tries direct fetch first, then falls back to Playwright browser for failures.
  */
 export async function downloadCardImages(
   cards: CardData[],
@@ -146,7 +278,9 @@ export async function downloadCardImages(
   await mkdir(outputDir, { recursive: true });
 
   const results: CardData[] = [];
+  const failedCards: Array<{ card: CardData; imgPath: string }> = [];
 
+  // Phase 1: Try direct fetch for all cards
   for (const card of cards) {
     if (!card.imageUrl) {
       console.warn(`[scraper] No image URL for ${card.name}`);
@@ -155,42 +289,33 @@ export async function downloadCardImages(
     }
 
     const imgPath = path.join(outputDir, `card-${card.rank}.jpg`);
-    let downloaded = false;
+    const savedPath = await fetchImageDirect(card, imgPath);
 
-    // Try the URL as-is, then fall back to _200w if _400w returns non-200
-    const urlsToTry = [card.imageUrl];
-    if (card.imageUrl.includes("_400w")) {
-      urlsToTry.push(card.imageUrl.replace("_400w", "_200w"));
+    if (savedPath) {
+      results.push({ ...card, imageUrl: savedPath });
+    } else {
+      // Mark for browser fallback
+      failedCards.push({ card, imgPath });
+      results.push(card); // placeholder — will be updated if browser succeeds
     }
 
-    outer: for (const url of urlsToTry) {
-      for (let attempt = 1; attempt <= 2 && !downloaded; attempt++) {
-        try {
-          if (attempt > 1) await new Promise((r) => setTimeout(r, 600));
-          const imgRes = await fetch(url, { headers: { "User-Agent": UA } });
-          if (imgRes.ok) {
-            const buffer = Buffer.from(await imgRes.arrayBuffer());
-            await writeFile(imgPath, buffer);
-            results.push({ ...card, imageUrl: imgPath });
-            console.log(`[scraper] Saved image for ${card.name} (${url})`);
-            downloaded = true;
-            break outer;
-          } else {
-            console.warn(`[scraper] HTTP ${imgRes.status} for ${card.name} — ${url}`);
-          }
-        } catch (err) {
-          console.warn(`[scraper] Fetch error for ${card.name} (${url}):`, (err as Error).message);
-        }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  // Phase 2: Use Playwright browser for any that failed
+  if (failedCards.length > 0) {
+    console.warn(
+      `[scraper] ${failedCards.length} image(s) failed direct fetch — trying browser fallback`
+    );
+    const browserResults = await fetchImagesWithBrowser(failedCards);
+
+    // Update results for cards that the browser saved successfully
+    for (let i = 0; i < results.length; i++) {
+      const saved = browserResults.get(results[i].rank);
+      if (saved) {
+        results[i] = { ...results[i], imageUrl: saved };
       }
     }
-
-    if (!downloaded) {
-      console.warn(`[scraper] All attempts failed for ${card.name}, using URL fallback`);
-      results.push(card); // keep HTTP URL so canvas can try loading it directly
-    }
-
-    // Small delay between cards
-    await new Promise((r) => setTimeout(r, 300));
   }
 
   return results;
@@ -252,6 +377,17 @@ const HIGH_TIER_RARITIES = new Set([
   "Ultra Rare",
 ]);
 
+/** Broader rarities to fall back on when high-tier filter yields too few cards */
+const FALLBACK_RARITIES = new Set([
+  "Illustration Rare",
+  "Special Illustration Rare",
+  "Ultra Rare",
+  "Double Rare",
+  "Hyper Rare",
+  "ACE SPEC Rare",
+  "Rare",
+]);
+
 /**
  * Scrape top movers from a specific set's page, filtered by rarity.
  */
@@ -283,20 +419,32 @@ export async function scrapeSetCards(config: {
     jsonLdItems = jsonLd.itemListElement || [];
   } catch {}
 
-  const allowedRarities = config.rarityFilter
+  const primaryRarities = config.rarityFilter
     ? new Set(config.rarityFilter)
     : HIGH_TIER_RARITIES;
 
-  const cards: CardData[] = [];
+  // Parse all cards from the page once, then filter by rarity
+  interface ParsedCard {
+    rarity: string;
+    productId: string;
+    subType: string;
+    price: number;
+    changeAmount: number;
+    changePct: number;
+    cardNumber: string;
+    setName: string;
+    cardName: string;
+    number: string;
+    imageUrl: string | undefined;
+    tcgPlayerUrl: string;
+  }
+
+  const allParsed: ParsedCard[] = [];
 
   $(".gainer-card").each((i, el) => {
-    if (cards.length >= config.topN) return;
-
     const $el = $(el);
     const badges = $el.find(".card-details-badge span");
     const rarity = badges.length > 0 ? $(badges[0]).text().trim() : "";
-
-    if (!allowedRarities.has(rarity)) return;
 
     const productId = $el.attr("data-product-id-card") || "";
     const subType = $el.attr("data-sub-type") || "Holofoil";
@@ -310,7 +458,6 @@ export async function scrapeSetCards(config: {
     const cardNumber = badges.length > 1 ? $(badges[1]).text().trim() : "";
     const setName = $el.find(".group-link").text().trim();
 
-    // Prefer .card-name from HTML (always present), fall back to JSON-LD
     const jsonLdItem = jsonLdItems[i]?.item;
     const htmlName = $el.find(".card-name").text().trim() || $el.find("h3").text().trim();
     const rawName = htmlName || jsonLdItem?.name || `Card #${productId}`;
@@ -329,23 +476,44 @@ export async function scrapeSetCards(config: {
       $el.find("a[href*='tcgplayer.com']").attr("href") ||
       "";
 
-    cards.push({
-      rank: cards.length + 1,
-      name: cardName,
-      number,
-      setName,
-      rarity,
-      type: subType,
-      price,
-      dollarChange: changeAmount,
-      percentChange: changePct,
-      tcgPlayerUrl,
-      imageUrl,
+    allParsed.push({
+      rarity, productId, subType, price, changeAmount, changePct,
+      cardNumber, setName, cardName, number, imageUrl, tcgPlayerUrl,
     });
   });
 
+  // Filter by primary rarities first; if too few, widen to fallback rarities
+  let filtered = allParsed.filter((c) => primaryRarities.has(c.rarity));
+  if (filtered.length < config.topN) {
+    console.warn(
+      `[scraper] Only ${filtered.length} high-tier cards found — widening rarity filter`
+    );
+    filtered = allParsed.filter((c) => FALLBACK_RARITIES.has(c.rarity));
+  }
+  // If still too few, use all cards from the page
+  if (filtered.length < config.topN) {
+    console.warn(
+      `[scraper] Still only ${filtered.length} cards — using all rarities`
+    );
+    filtered = allParsed;
+  }
+
+  const cards: CardData[] = filtered.slice(0, config.topN).map((c, i) => ({
+    rank: i + 1,
+    name: c.cardName,
+    number: c.number,
+    setName: c.setName,
+    rarity: c.rarity,
+    type: c.subType,
+    price: c.price,
+    dollarChange: c.changeAmount,
+    percentChange: c.changePct,
+    tcgPlayerUrl: c.tcgPlayerUrl,
+    imageUrl: c.imageUrl,
+  }));
+
   console.log(
-    `[scraper] Found ${cards.length} high-tier cards in ${config.setSlug}`
+    `[scraper] Found ${cards.length} cards in ${config.setSlug} (rarities: ${[...new Set(cards.map((c) => c.rarity))].join(", ")})`
   );
   return cards;
 }
