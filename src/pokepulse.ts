@@ -334,7 +334,8 @@ export function formatMarketSummary(trends: MarketTrend[]): string | null {
 }
 
 /**
- * Scrape top card data from PokePulse homepage for use in video generation.
+ * Scrape top card data from PokePulse market report table.
+ * Navigates to /market → clicks first report → parses the table rows.
  * Returns CardData[] with image URLs, prices (GBP), and % changes.
  */
 export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
@@ -353,129 +354,85 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
 
     await login(page, email, password);
 
-    // Navigate to homepage to scrape card grids
-    await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: 20_000 });
+    // Navigate to /market to find the latest report
+    const marketUrl = `${BASE_URL}/market`;
+    console.log(`[pokepulse] Navigating to ${marketUrl}`);
+    await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
     await page.waitForTimeout(2000);
 
-    // Debug: dump HTML of first card link to understand image structure
-    const debugInfo = await page.$$eval("section", (sects) => {
-      const info: { sectionCount: number; linkCount: number; firstLinkHtml: string; firstImgAttrs: Record<string, string> } = {
-        sectionCount: sects.length,
-        linkCount: 0,
-        firstLinkHtml: "",
-        firstImgAttrs: {},
-      };
-      for (const sect of sects) {
-        const links = Array.from(
-          sect.querySelectorAll(".group a[href^='/cards/'], .group a[href^='/sealed/'], a[href^='/cards/'], a[href^='/sealed/']")
-        );
-        info.linkCount += links.length;
-        if (links.length > 0 && !info.firstLinkHtml) {
-          info.firstLinkHtml = links[0].outerHTML.slice(0, 2000);
-          const img = links[0].querySelector("img");
-          if (img) {
-            for (const attr of Array.from(img.attributes)) {
-              info.firstImgAttrs[attr.name] = attr.value.slice(0, 200);
-            }
-          }
-        }
-      }
-      return info;
-    });
-    console.log(`[pokepulse] Debug: ${debugInfo.sectionCount} sections, ${debugInfo.linkCount} card links`);
-    console.log(`[pokepulse] First link HTML: ${debugInfo.firstLinkHtml.slice(0, 500)}`);
-    console.log(`[pokepulse] First img attrs: ${JSON.stringify(debugInfo.firstImgAttrs)}`);
-
-    // Extract cards with images from the homepage sections
-    const rawCards = await page.$$eval("section", (sects) => {
-      const allCards: Array<{
-        name: string;
-        price: number;
-        changePct: number;
-        imageUrl: string;
-        section: string;
-        href: string;
-      }> = [];
-
-      for (const sect of sects) {
-        const sectionTitle = (sect.querySelector("h3")?.textContent || "").trim();
-        const links = Array.from(
-          sect.querySelectorAll(".group a[href^='/cards/'], .group a[href^='/sealed/'], a[href^='/cards/'], a[href^='/sealed/']")
-        );
-        for (const a of links) {
-          const name = (a.querySelector("p.text-xs.font-medium, p.truncate")?.textContent || "").trim();
-          if (!name) continue;
-
-          // Image URL — try src, then srcset, then data-src, then style background
-          const img = a.querySelector("img");
-          let imageUrl = "";
-          if (img) {
-            imageUrl = img.getAttribute("src") || "";
-            if (!imageUrl || imageUrl.startsWith("data:")) {
-              // Try srcset (take first URL)
-              const srcset = img.getAttribute("srcset") || "";
-              const srcsetMatch = srcset.match(/(\S+)\s/);
-              if (srcsetMatch) imageUrl = srcsetMatch[1];
-            }
-            if (!imageUrl || imageUrl.startsWith("data:")) {
-              imageUrl = img.getAttribute("data-src") || img.getAttribute("data-nimg") || "";
-            }
-          }
-          // Fallback: look for background-image in style
-          if (!imageUrl || imageUrl.startsWith("data:")) {
-            const styledEl = a.querySelector("[style*='background-image']");
-            if (styledEl) {
-              const bgMatch = styledEl.getAttribute("style")?.match(/url\(['"]?([^'")\s]+)/);
-              if (bgMatch) imageUrl = bgMatch[1];
-            }
-          }
-
-          // Price (£)
-          const priceText = Array.from(a.querySelectorAll("span"))
-            .find((s) => (s.textContent || "").includes("£"))?.textContent || "";
-          const priceMatch = priceText.match(/£([\d,.]+)/);
-          const price = priceMatch ? parseFloat(priceMatch[1].replace(",", "")) : 0;
-
-          // % change
-          const pctSpan = a.querySelector(".text-green-600, .text-green-400, .text-red-600, .text-red-400");
-          const pctText = pctSpan?.textContent || "0";
-          const pctMatch = pctText.match(/([\d.]+)%/);
-          const pct = pctMatch ? parseFloat(pctMatch[1]) : 0;
-          const isDown = !!a.querySelector(".lucide-trending-down");
-          const changePct = isDown ? -pct : pct;
-
-          const href = (a as HTMLAnchorElement).getAttribute("href") || "";
-          allCards.push({ name, price, changePct, imageUrl, section: sectionTitle, href });
-        }
-      }
-      return allCards;
-    });
-
-    console.log(`[pokepulse] Raw cards found: ${rawCards.length}, with images: ${rawCards.filter(c => c.imageUrl && !c.imageUrl.startsWith("data:")).length}`);
-    if (rawCards.length > 0 && !rawCards[0].imageUrl) {
-      console.log(`[pokepulse] First card: name="${rawCards[0].name}", imageUrl="${rawCards[0].imageUrl}"`);
+    // Click into the first report (links to /market/analysis?reportId=...)
+    const reportLink = page.locator('a[href*="/market/analysis"]').first();
+    if ((await reportLink.count()) === 0) {
+      throw new Error("No market report links found on /market page");
     }
+    await reportLink.click();
+    await page.waitForLoadState("networkidle");
+    await page.waitForTimeout(2000);
 
-    // Deduplicate by name (same card may appear in multiple sections)
-    const seen = new Set<string>();
-    const uniqueCards = rawCards.filter((c) => {
-      if (seen.has(c.name)) return false;
-      seen.add(c.name);
-      // Keep cards even without images — we'll try to find images via card detail pages
-      return true;
-    });
+    // Wait for the table to appear
+    await page.waitForSelector("table tbody tr", { timeout: 10_000 });
+
+    // Parse table rows for full card data
+    const rawCards = await page.$$eval("table tbody tr", (trs) =>
+      trs.map((tr) => {
+        const cells = Array.from(tr.querySelectorAll("td"));
+        if (cells.length < 6) return null;
+
+        // Product cell (index 1): contains image, name, and number
+        const productCell = cells[1];
+        const img = productCell?.querySelector("img");
+        const imageUrl = img?.getAttribute("src") || "";
+        const nameEl = productCell?.querySelector("span.text-xs.truncate.font-medium");
+        const name = (nameEl?.textContent || "").trim();
+        // Number + rarity hint (e.g. "22/214 • Holo")
+        const numberEl = productCell?.querySelector("span.font-normal.text-muted-foreground");
+        const numberText = (numberEl?.textContent || "").trim();
+
+        // Set name (index 2)
+        const setEl = cells[2]?.querySelector("span.text-xs");
+        const setName = (setEl?.textContent || "").trim();
+
+        // Rarity (index 3)
+        const rarityEl = cells[3]?.querySelector("span.text-xs");
+        const rarity = (rarityEl?.textContent || "").trim();
+
+        // Market Price (index 4) — contains £X.XX in a purple span
+        const priceEl = cells[4]?.querySelector("span.font-mono, span.text-purple-600");
+        const priceText = priceEl?.textContent || "";
+        const priceMatch = priceText.match(/£([\d,.]+)/);
+        const price = priceMatch ? parseFloat(priceMatch[1].replace(",", "")) : 0;
+
+        // 7-Day Change (index 6) — green or red span with +X.X% or -X.X%
+        let changePct = 0;
+        for (const cell of cells) {
+          const pctEl = cell.querySelector("span.text-green-600, span.text-red-600");
+          if (pctEl) {
+            const pctText = pctEl.textContent || "";
+            const match = pctText.match(/([+-]?[\d.]+)%/);
+            if (match) {
+              changePct = parseFloat(match[1]);
+              break;
+            }
+          }
+        }
+
+        return { name, numberText, setName, rarity, price, changePct, imageUrl };
+      }).filter((r): r is NonNullable<typeof r> => r !== null && r.name.length > 0)
+    );
+
+    console.log(`[pokepulse] Report table: ${rawCards.length} rows`);
 
     // Sort by absolute % change descending (biggest movers first)
-    uniqueCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+    rawCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
 
     // Take top N and convert to CardData
-    const topCards = uniqueCards.slice(0, topN);
+    const topCards = rawCards.slice(0, topN);
     const cards: CardData[] = topCards.map((c, i) => ({
       rank: i + 1,
       name: c.name,
-      number: "",
-      setName: c.section,
-      rarity: "",
+      number: c.numberText,
+      setName: c.setName,
+      rarity: c.rarity,
       type: "",
       price: c.price,
       dollarChange: 0,
@@ -483,55 +440,6 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
       tcgPlayerUrl: "",
       imageUrl: c.imageUrl,
     }));
-
-    // For cards missing images, try visiting their detail pages
-    const missingImageCards = cards.filter(
-      (c, i) => !c.imageUrl || c.imageUrl.startsWith("data:")
-    );
-    if (missingImageCards.length > 0) {
-      console.log(`[pokepulse] ${missingImageCards.length} cards missing images — visiting detail pages…`);
-      for (const card of missingImageCards) {
-        const cardInfo = topCards.find((tc) => tc.name === card.name);
-        if (!cardInfo?.href) continue;
-        try {
-          const cardUrl = `${BASE_URL}${cardInfo.href}`;
-          await page.goto(cardUrl, { waitUntil: "networkidle", timeout: 15_000 });
-          await page.waitForTimeout(1000);
-
-          // Look for the main card image on the detail page
-          const imgUrl = await page.$$eval("img", (imgs) => {
-            for (const img of imgs) {
-              const src = img.getAttribute("src") || "";
-              const alt = img.getAttribute("alt") || "";
-              // Look for card images (typically from TCGPlayer CDN or product images)
-              if (
-                src.includes("tcgplayer") ||
-                src.includes("product") ||
-                src.includes("card") ||
-                (src.startsWith("http") && img.naturalWidth > 100)
-              ) {
-                return src;
-              }
-              // Also try srcset
-              const srcset = img.getAttribute("srcset") || "";
-              if (srcset) {
-                const parts = srcset.split(",").map((s) => s.trim().split(" ")[0]);
-                const best = parts[parts.length - 1];
-                if (best && best.startsWith("http")) return best;
-              }
-            }
-            return "";
-          });
-
-          if (imgUrl && !imgUrl.startsWith("data:")) {
-            card.imageUrl = imgUrl;
-            console.log(`[pokepulse] Found image for "${card.name}" from detail page`);
-          }
-        } catch (err) {
-          console.warn(`[pokepulse] Failed to get image for "${card.name}": ${(err as Error).message}`);
-        }
-      }
-    }
 
     const cardsWithImages = cards.filter(
       (c) => c.imageUrl && !c.imageUrl.startsWith("data:")
