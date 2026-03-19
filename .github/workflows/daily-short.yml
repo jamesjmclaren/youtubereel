@@ -54,6 +54,8 @@ jobs:
         run: |
           echo "YOUTUBE_CLIENT_ID=${{ secrets.YOUTUBE_CLIENT_ID }}" > .env
           echo "YOUTUBE_CLIENT_SECRET=${{ secrets.YOUTUBE_CLIENT_SECRET }}" >> .env
+          echo "POKEPULSE_EMAIL=${{ secrets.POKEPULSE_EMAIL }}" >> .env
+          echo "POKEPULSE_PASSWORD=${{ secrets.POKEPULSE_PASSWORD }}" >> .env
 
       - name: Run pipeline
         run: |
