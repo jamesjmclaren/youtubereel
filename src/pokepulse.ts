@@ -1,5 +1,5 @@
 import { chromium, type Browser, type Page } from "playwright";
-import type { MarketTrend } from "./types.js";
+import type { CardData, MarketTrend } from "./types.js";
 
 /**
  * PulseTCG (pokepulse.io) market trends scraper.
@@ -331,6 +331,112 @@ export function formatMarketSummary(trends: MarketTrend[]): string | null {
   const sign = avgChange >= 0 ? "+" : "";
 
   return `${arrow} Market ${sign}${avgChange.toFixed(1)}% (${upCount} up, ${downCount} down)`;
+}
+
+/**
+ * Scrape top card data from PokePulse homepage for use in video generation.
+ * Returns CardData[] with image URLs, prices (GBP), and % changes.
+ */
+export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
+  let browser: Browser | undefined;
+
+  try {
+    const { email, password } = getCredentials();
+
+    console.log("[pokepulse] Launching browser for card scrape…");
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    });
+    const page = await context.newPage();
+
+    await login(page, email, password);
+
+    // Navigate to homepage to scrape card grids
+    await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: 20_000 });
+    await page.waitForTimeout(2000);
+
+    // Extract cards with images from the homepage sections
+    const rawCards = await page.$$eval("section", (sects) => {
+      const allCards: Array<{
+        name: string;
+        price: number;
+        changePct: number;
+        imageUrl: string;
+        section: string;
+      }> = [];
+
+      for (const sect of sects) {
+        const sectionTitle = (sect.querySelector("h3")?.textContent || "").trim();
+        const links = Array.from(
+          sect.querySelectorAll("a[href^='/cards/'], a[href^='/sealed/']")
+        );
+        for (const a of links) {
+          const name = (a.querySelector("p.text-xs.font-medium, p.truncate")?.textContent || "").trim();
+          if (!name) continue;
+
+          // Image URL
+          const img = a.querySelector("img");
+          const imageUrl = img?.getAttribute("src") || "";
+
+          // Price (£)
+          const priceText = Array.from(a.querySelectorAll("span"))
+            .find((s) => (s.textContent || "").includes("£"))?.textContent || "";
+          const priceMatch = priceText.match(/£([\d,.]+)/);
+          const price = priceMatch ? parseFloat(priceMatch[1].replace(",", "")) : 0;
+
+          // % change
+          const pctSpan = a.querySelector(".text-green-600, .text-green-400, .text-red-600, .text-red-400");
+          const pctText = pctSpan?.textContent || "0";
+          const pctMatch = pctText.match(/([\d.]+)%/);
+          const pct = pctMatch ? parseFloat(pctMatch[1]) : 0;
+          const isDown = !!a.querySelector(".lucide-trending-down");
+          const changePct = isDown ? -pct : pct;
+
+          allCards.push({ name, price, changePct, imageUrl, section: sectionTitle });
+        }
+      }
+      return allCards;
+    });
+
+    // Deduplicate by name (same card may appear in multiple sections)
+    const seen = new Set<string>();
+    const uniqueCards = rawCards.filter((c) => {
+      if (seen.has(c.name) || !c.imageUrl) return false;
+      seen.add(c.name);
+      return true;
+    });
+
+    // Sort by absolute % change descending (biggest movers first)
+    uniqueCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+
+    // Take top N and convert to CardData
+    const topCards = uniqueCards.slice(0, topN);
+    const cards: CardData[] = topCards.map((c, i) => ({
+      rank: i + 1,
+      name: c.name,
+      number: "",
+      setName: c.section,
+      rarity: "",
+      type: "",
+      price: c.price,
+      dollarChange: 0,
+      percentChange: c.changePct,
+      tcgPlayerUrl: "",
+      imageUrl: c.imageUrl,
+    }));
+
+    console.log(`[pokepulse] Scraped ${cards.length} cards with images`);
+
+    await context.close();
+    return cards;
+  } catch (err) {
+    console.warn("[pokepulse] Card scrape failed:", (err as Error).message);
+    return [];
+  } finally {
+    await browser?.close();
+  }
 }
 
 /**

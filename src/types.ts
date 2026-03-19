@@ -33,6 +33,10 @@ export interface ContentPreset {
   setSlug?: string;
   /** Rarity filter for set-based presets (applied client-side) */
   rarityFilter?: string[];
+  /** Data source: "tcgmarketnews" (default) or "pokepulse" */
+  source?: "tcgmarketnews" | "pokepulse";
+  /** Force slideshow mode (one card at a time) instead of 50/50 random */
+  forceSlideshow?: boolean;
 }
 
 /** Market trend data scraped from PokePulse */

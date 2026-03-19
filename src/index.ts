@@ -6,7 +6,7 @@ import { renderVideo, renderSlideshow, videoDuration } from "./video-renderer.js
 import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday, getPresetForTodayWithSets, buildSetPresets } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
-import { scrapeMarketTrends, formatMarketSummary, suggestDirection } from "./pokepulse.js";
+import { scrapeMarketTrends, formatMarketSummary, suggestDirection, scrapePokePulseCards } from "./pokepulse.js";
 
 /** Titles used in this session — prevents duplicate titles across dual-mode videos */
 const usedTitles: string[] = [];
@@ -50,7 +50,9 @@ async function run(
   // Step 1: Scrape
   console.log("\n━━━ Step 1: Scraping cards ━━━");
   let cards: CardData[];
-  if (preset?.setSlug) {
+  if (preset?.source === "pokepulse") {
+    cards = await scrapePokePulseCards(config.topN);
+  } else if (preset?.setSlug) {
     cards = await scrapeSetCards({
       setSlug: preset.setSlug,
       period: config.period,
@@ -97,8 +99,8 @@ async function run(
 
   const duration = videoDuration(cards.length);
 
-  // Alternate between grid and slideshow style (50/50)
-  const useSlideshow = Math.random() > 0.5;
+  // Force slideshow for PokePulse presets, otherwise 50/50 random
+  const useSlideshow = preset?.forceSlideshow || Math.random() > 0.5;
   const videoPath = `${runDir}/short.mp4`;
 
   if (useSlideshow) {
@@ -235,7 +237,6 @@ if (args.includes("--auth")) {
       }
     }
 
-    const setPresets = await buildSetPresets(4);
     let failures = 0;
 
     console.log("═══ DUAL MODE: 2 videos tonight ═══");
@@ -248,19 +249,25 @@ if (args.includes("--auth")) {
       failures++;
     }
 
-    let setSuccess = false;
-    for (const setPreset of setPresets) {
-      console.log(`\n── Video 2: ${setPreset.title} ──`);
-      try {
-        await runPreset(setPreset);
-        setSuccess = true;
-        break;
-      } catch (err) {
-        console.warn(`[pipeline] ${setPreset.name} failed: ${(err as Error).message}, trying next set...`);
-      }
-    }
-    if (!setSuccess) {
-      console.error("[pipeline] All set presets failed.");
+    // Video 2: PokePulse UK market movers — 10 cards, slideshow style
+    const pokepulsePreset: ContentPreset = {
+      name: "pokepulse-uk-movers",
+      title: "UK MARKET MOVERS",
+      subtitle: "Top movers from PulseTCG UK",
+      direction: "gainers",
+      period: "7d",
+      priceFilter: "",
+      topN: 10,
+      theme: "emerald",
+      source: "pokepulse",
+      forceSlideshow: true,
+    };
+
+    console.log(`\n── Video 2: ${pokepulsePreset.title} ──`);
+    try {
+      await runPreset(pokepulsePreset);
+    } catch (err) {
+      console.error(`[pipeline] PokePulse video failed: ${(err as Error).message}`);
       failures++;
     }
 
