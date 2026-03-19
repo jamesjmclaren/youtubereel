@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import { readFile, writeFile } from "fs/promises";
 import { createReadStream } from "fs";
-import type { CardData } from "./types.js";
+import type { CardData, MarketTrend } from "./types.js";
 
 const SCOPES = ["https://www.googleapis.com/auth/youtube.upload"];
 const TOKEN_PATH = "tokens.json";
@@ -122,20 +122,37 @@ function generateTitle(
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function generateDescription(cards: CardData[], period: string): string {
+function generateDescription(
+  cards: CardData[],
+  period: string,
+  marketTrends?: MarketTrend[]
+): string {
   const lines = [
     `Top 5 Pokémon cards with the biggest price increases (${period}).`,
     "",
+  ];
+
+  // Add market trend context if available
+  if (marketTrends && marketTrends.length > 0) {
+    lines.push("📈 Market Snapshot:");
+    for (const trend of marketTrends.slice(0, 3)) {
+      const arrow = trend.direction === "up" ? "▲" : trend.direction === "down" ? "▼" : "▸";
+      lines.push(`  ${arrow} ${trend.summary}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
     "📊 Rankings:",
     ...cards.map(
       (c) =>
         `#${c.rank} ${c.name} — $${c.price.toFixed(2)} (+${c.percentChange.toFixed(0)}%)`
     ),
     "",
-    "Data from TCG Market News • Prices from TCGPlayer",
+    "Data from TCG Market News & PokePulse • Prices from TCGPlayer",
     "",
-    "#Pokemon #PokemonTCG #PokemonCards #TCG #Investing #PriceWatch #Shorts",
-  ];
+    "#Pokemon #PokemonTCG #PokemonCards #TCG #Investing #PriceWatch #Shorts"
+  );
 
   return lines.join("\n");
 }
@@ -144,13 +161,14 @@ export async function uploadToYouTube(
   videoPath: string,
   cards: CardData[],
   period: string,
-  excludeTitles: string[] = []
+  excludeTitles: string[] = [],
+  marketTrends?: MarketTrend[]
 ): Promise<{ url: string; title: string }> {
   const auth = await getAuthenticatedClient();
   const youtube = google.youtube({ version: "v3", auth });
 
   const title = generateTitle(cards, period, excludeTitles);
-  const description = generateDescription(cards, period);
+  const description = generateDescription(cards, period, marketTrends);
 
   console.log(`[uploader] Uploading: ${title}`);
 

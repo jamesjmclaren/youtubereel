@@ -1,14 +1,41 @@
 import { mkdir, writeFile, readdir } from "fs/promises";
 import { scrapeTopCards, scrapeSetCards, downloadCardImages } from "./scraper.js";
 import { generateImage, generateSlides } from "./image-generator.js";
-import type { CardData } from "./types.js";
+import type { CardData, MarketTrend } from "./types.js";
 import { renderVideo, renderSlideshow, videoDuration } from "./video-renderer.js";
 import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday, getPresetForTodayWithSets, buildSetPresets } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
+import { scrapeMarketTrends, formatMarketSummary, suggestDirection } from "./pokepulse.js";
 
 /** Titles used in this session — prevents duplicate titles across dual-mode videos */
 const usedTitles: string[] = [];
+
+/** Cached market trends for the session (fetched once, reused across videos) */
+let cachedMarketTrends: MarketTrend[] | undefined;
+
+async function fetchMarketTrends(): Promise<MarketTrend[]> {
+  if (cachedMarketTrends !== undefined) return cachedMarketTrends;
+
+  if (!process.env.POKEPULSE_EMAIL || !process.env.POKEPULSE_PASSWORD) {
+    console.log("[pipeline] PokePulse credentials not set — skipping market trends");
+    cachedMarketTrends = [];
+    return cachedMarketTrends;
+  }
+
+  try {
+    cachedMarketTrends = await scrapeMarketTrends();
+    if (cachedMarketTrends.length > 0) {
+      const summary = formatMarketSummary(cachedMarketTrends);
+      console.log(`[pipeline] Market snapshot: ${summary}`);
+    }
+  } catch (err) {
+    console.warn("[pipeline] PokePulse fetch failed:", (err as Error).message);
+    cachedMarketTrends = [];
+  }
+
+  return cachedMarketTrends;
+}
 
 async function run(
   config: PipelineConfig,
@@ -110,7 +137,8 @@ async function run(
   // Step 5: Upload
   if (!skipUpload) {
     console.log("\n━━━ Step 5: Uploading to YouTube ━━━");
-    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles);
+    const marketTrends = await fetchMarketTrends();
+    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends);
     usedTitles.push(title);
     console.log(`\n✅ Done! Video live at: ${url}`);
   } else {
@@ -192,8 +220,21 @@ if (args.includes("--auth")) {
   }
 
   if (dualMode) {
-    // Run two videos: one generic (auto-rotate) + one for the latest set
-    const genericPreset = getPresetForToday();
+    // Pre-fetch market trends to inform preset selection
+    const marketTrends = await fetchMarketTrends();
+    const marketDirection = suggestDirection(marketTrends);
+
+    // Pick generic preset — if PokePulse says market is crashing, swap to a losers preset
+    let genericPreset = getPresetForToday();
+    if (marketDirection && genericPreset.direction !== marketDirection) {
+      const betterFit = CONTENT_PRESETS.find((p) => p.direction === marketDirection);
+      if (betterFit) {
+        const summary = formatMarketSummary(marketTrends);
+        console.log(`[pipeline] Market trend (${summary}) → switching to ${betterFit.name}`);
+        genericPreset = betterFit;
+      }
+    }
+
     const setPresets = await buildSetPresets(4);
     let failures = 0;
 

@@ -34,3 +34,21 @@ export interface ContentPreset {
   /** Rarity filter for set-based presets (applied client-side) */
   rarityFilter?: string[];
 }
+
+/** Market trend data scraped from PokePulse */
+export interface MarketTrend {
+  /** e.g. "overall", set name, or card category */
+  category: string;
+  /** Direction of the trend */
+  direction: "up" | "down" | "flat";
+  /** Percentage change (e.g. 5.2 means +5.2%) */
+  changePct: number;
+  /** Human-readable summary (e.g. "Market up 5.2% this week") */
+  summary: string;
+  /** Volume or number of cards tracked, if available */
+  volume?: number;
+  /** Time period the trend covers */
+  period?: string;
+  /** Top trending card names, if listed */
+  trendingCards?: string[];
+}
