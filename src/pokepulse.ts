@@ -34,6 +34,22 @@ async function login(page: Page, email: string, password: string): Promise<void>
   // Go to homepage first
   await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: 20_000 });
 
+  // Dismiss cookie consent overlay if present (it blocks clicks on the page)
+  try {
+    const acceptBtn = page.locator('.cm-btn-accept, button:has-text("Accept"), .cm-overlay button').first();
+    if ((await acceptBtn.count()) > 0) {
+      await acceptBtn.click({ timeout: 3000 });
+      console.log("[pokepulse] Dismissed cookie consent overlay");
+      await page.waitForTimeout(500);
+    }
+  } catch {
+    // If no cookie banner or click fails, try removing the overlay via JS
+    await page.evaluate(() => {
+      document.querySelectorAll('.cm-overlay').forEach((el) => el.remove());
+    });
+    console.log("[pokepulse] Removed cookie overlay via JS");
+  }
+
   // Click the "Login" button in the header to open the auth modal
   const loginBtn = page.locator('header button:has-text("Login")').first();
   if ((await loginBtn.count()) > 0) {
