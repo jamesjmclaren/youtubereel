@@ -354,61 +354,11 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
 
     await login(page, email, password);
 
-    // Navigate to /market to find the latest report
-    const marketUrl = `${BASE_URL}/market`;
-    console.log(`[pokepulse] Navigating to ${marketUrl}`);
-    await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
+    // Navigate directly to the 7-day price movers report (reportId=1)
+    const reportUrl = `${BASE_URL}/market/analysis?reportId=1`;
+    console.log(`[pokepulse] Navigating to ${reportUrl}`);
+    await page.goto(reportUrl, { waitUntil: "networkidle", timeout: 20_000 });
     await page.waitForTimeout(2000);
-
-    // Debug: log all links on the /market page to find the report pattern
-    const linkInfo = await page.$$eval("a[href]", (links) =>
-      links
-        .map((a) => (a as HTMLAnchorElement).getAttribute("href") || "")
-        .filter((h) => h.includes("market") || h.includes("report") || h.includes("analysis"))
-    );
-    console.log(`[pokepulse] Market page links: ${JSON.stringify(linkInfo.slice(0, 20))}`);
-
-    // Try multiple selectors for the report link
-    const reportSelectors = [
-      'a[href*="/market/analysis"]',
-      'a[href*="/market/report"]',
-      'a[href*="reportId"]',
-      'a[href*="/market/"]',
-    ];
-
-    let reportFound = false;
-    for (const selector of reportSelectors) {
-      const link = page.locator(selector).first();
-      if ((await link.count()) > 0) {
-        const href = await link.getAttribute("href");
-        console.log(`[pokepulse] Found report link: ${href} (selector: ${selector})`);
-        await link.click();
-        await page.waitForLoadState("networkidle");
-        await page.waitForTimeout(2000);
-        reportFound = true;
-        break;
-      }
-    }
-
-    // If no report link found, check if table is already on the /market page
-    if (!reportFound) {
-      console.log("[pokepulse] No report link found — checking if table exists on current page");
-      const tableExists = await page.locator("table tbody tr").count();
-      if (tableExists === 0) {
-        // Last resort: dump page structure for debugging
-        const pageDebug = await page.evaluate(() => {
-          const allLinks = Array.from(document.querySelectorAll("a[href]")).map(
-            (a) => (a as HTMLAnchorElement).href
-          );
-          const headings = Array.from(document.querySelectorAll("h1,h2,h3,h4")).map(
-            (h) => h.textContent?.trim()
-          );
-          return { url: window.location.href, linkCount: allLinks.length, links: allLinks.slice(0, 30), headings };
-        });
-        console.log(`[pokepulse] Page debug: ${JSON.stringify(pageDebug)}`);
-        throw new Error("No market report table found on /market page");
-      }
-    }
 
     // Wait for the table to appear
     await page.waitForSelector("table tbody tr", { timeout: 10_000 });
