@@ -7,6 +7,7 @@ import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday, getPresetForTodayWithSets, buildSetPresets } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
 import { scrapeMarketTrends, formatMarketSummary, suggestDirection, scrapePokePulseCards } from "./pokepulse.js";
+import { uploadToFacebook } from "./facebook-uploader.js";
 
 /** Titles used in this session — prevents duplicate titles across dual-mode videos */
 const usedTitles: string[] = [];
@@ -138,11 +139,28 @@ async function run(
 
   // Step 5: Upload
   if (!skipUpload) {
-    console.log("\n━━━ Step 5: Uploading to YouTube ━━━");
     const marketTrends = await fetchMarketTrends();
+
+    // YouTube
+    console.log("\n━━━ Step 5a: Uploading to YouTube ━━━");
     const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends);
     usedTitles.push(title);
-    console.log(`\n✅ Done! Video live at: ${url}`);
+    console.log(`YouTube: ${url}`);
+
+    // Facebook Reels (optional — only if credentials are set)
+    if (process.env.FB_PAGE_ID && process.env.FB_PAGE_ACCESS_TOKEN) {
+      console.log("\n━━━ Step 5b: Uploading to Facebook ━━━");
+      try {
+        const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends);
+        console.log(`Facebook: ${fb.url}`);
+      } catch (err) {
+        console.error(`[pipeline] Facebook upload failed: ${(err as Error).message}`);
+      }
+    } else {
+      console.log("\n━━━ Step 5b: Skipped Facebook (no credentials) ━━━");
+    }
+
+    console.log(`\n✅ Done! Videos uploaded`);
   } else {
     console.log("\n━━━ Step 5: Skipped upload (--no-upload) ━━━");
     console.log(`\n✅ Done! Output in: ${runDir}/`);
