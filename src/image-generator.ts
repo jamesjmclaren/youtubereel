@@ -358,15 +358,16 @@ async function drawCard(
   ctx.fillText(displayName, centerX, dataStartY + nameSize);
 
   // Price
+  const cur = card.currency || "$";
   ctx.font = `bold ${priceFontSize}px ${F}`;
   ctx.fillStyle = theme.textWhite;
-  ctx.fillText(`$${card.price.toFixed(2)}`, centerX, dataStartY + nameSize + priceFontSize + 4);
+  ctx.fillText(`${cur}${card.price.toFixed(2)}`, centerX, dataStartY + nameSize + priceFontSize + 4);
 
   // % change + dollar change on same line
   ctx.font = `bold ${changeSize}px ${F}`;
   ctx.fillStyle = changeColor;
   const pctLabel = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
-  const dollarLabel = `${isPositive ? "↑" : "↓"} $${Math.abs(card.dollarChange).toFixed(2)}`;
+  const dollarLabel = `${isPositive ? "↑" : "↓"} ${cur}${Math.abs(card.dollarChange).toFixed(2)}`;
   const changeText = `${pctLabel}  ${dollarLabel}`;
   ctx.fillText(changeText, centerX, dataStartY + nameSize + priceFontSize + changeSize + 10);
 }
@@ -640,14 +641,15 @@ export async function generateSlides(
     }
 
     // Price
+    const slideCur = card.currency || "$";
     ctx.fillStyle = theme.textWhite;
     ctx.font = `bold 64px ${F}`;
-    ctx.fillText(`$${card.price.toFixed(2)}`, WIDTH / 2, dataY + 185);
+    ctx.fillText(`${slideCur}${card.price.toFixed(2)}`, WIDTH / 2, dataY + 185);
 
     // Dollar change
     ctx.fillStyle = changeColor;
     ctx.font = `36px ${F}`;
-    const dollarText = `${isPositive ? "\u2191" : "\u2193"} $${Math.abs(card.dollarChange).toFixed(2)}`;
+    const dollarText = `${isPositive ? "\u2191" : "\u2193"} ${slideCur}${Math.abs(card.dollarChange).toFixed(2)}`;
     ctx.fillText(dollarText, WIDTH / 2, dataY + 235);
 
     // Set name only at bottom (no product name)

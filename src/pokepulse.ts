@@ -204,17 +204,31 @@ async function parseReportTable(page: Page): Promise<MarketTrend[]> {
       // Product name is in the 2nd cell (index 1)
       const nameEl = cells[1]?.querySelector("span.text-xs.truncate.font-medium");
       const name = (nameEl?.textContent || "").trim();
-      // 7-Day Change is in a cell with green/red span containing %
+      // 7-Day Change — broaden selectors for colour variants
       let changePct = 0;
-      for (const cell of cells) {
-        const pctEl = cell.querySelector("span.text-green-600, span.text-red-600");
+      const pctSels = "span.text-green-600, span.text-green-500, span.text-green-400, span.text-red-600, span.text-red-500, span.text-red-400, span.text-emerald-600, span.text-emerald-500";
+      for (let ci = 5; ci < cells.length; ci++) {
+        const cell = cells[ci];
+        if (!cell) continue;
+        const pctEl = cell.querySelector(pctSels);
         if (pctEl) {
           const pctText = pctEl.textContent || "";
-          const match = pctText.match(/([+-]?[\d.]+)%/);
+          const match = pctText.match(/([+-]?[\d,.]+)\s*%/);
           if (match) {
-            changePct = parseFloat(match[1]);
+            changePct = parseFloat(match[1].replace(",", ""));
+            if (pctEl.className.includes("red") && changePct > 0) changePct = -changePct;
             break;
           }
+        }
+        // Fallback: any text with %
+        const cellText = cell.textContent || "";
+        const fm = cellText.match(/([+-]?[\d,.]+)\s*%/);
+        if (fm) {
+          changePct = parseFloat(fm[1].replace(",", ""));
+          if (cell.querySelector('[class*="red"]')) {
+            if (changePct > 0) changePct = -changePct;
+          }
+          break;
         }
       }
       // Volume from 7-Day Volume column (8th cell, index 7)
@@ -363,6 +377,15 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
     // Wait for the table to appear
     await page.waitForSelector("table tbody tr", { timeout: 10_000 });
 
+    // Debug: dump first row's cells so we can see the structure
+    const debugCells = await page.$$eval("table tbody tr:first-child td", (cells) =>
+      cells.map((cell, i) => ({ index: i, text: (cell.textContent || "").trim().slice(0, 80), html: cell.innerHTML.slice(0, 200) }))
+    );
+    console.log("[pokepulse] First row cells:");
+    for (const dc of debugCells) {
+      console.log(`[pokepulse]   [${dc.index}] text="${dc.text}" html=${dc.html}`);
+    }
+
     // Parse table rows for full card data
     const rawCards = await page.$$eval("table tbody tr", (trs) =>
       trs.map((tr) => {
@@ -393,25 +416,56 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
         const priceMatch = priceText.match(/£([\d,.]+)/);
         const price = priceMatch ? parseFloat(priceMatch[1].replace(",", "")) : 0;
 
-        // 7-Day Change (index 6) — green or red span with +X.X% or -X.X%
+        // 7-Day Change — look for coloured percentage spans across multiple class variants
         let changePct = 0;
-        for (const cell of cells) {
-          const pctEl = cell.querySelector("span.text-green-600, span.text-red-600");
+        const pctSelectors = [
+          "span.text-green-600", "span.text-green-500", "span.text-green-400",
+          "span.text-red-600", "span.text-red-500", "span.text-red-400",
+          "span.text-emerald-600", "span.text-emerald-500",
+        ].join(", ");
+        // Skip the price cell (index 4) — only look in cells 5+ for percentage
+        for (let ci = 5; ci < cells.length; ci++) {
+          const cell = cells[ci];
+          if (!cell) continue;
+          const pctEl = cell.querySelector(pctSelectors);
           if (pctEl) {
             const pctText = pctEl.textContent || "";
-            const match = pctText.match(/([+-]?[\d.]+)%/);
+            const match = pctText.match(/([+-]?[\d,.]+)\s*%/);
             if (match) {
-              changePct = parseFloat(match[1]);
+              changePct = parseFloat(match[1].replace(",", ""));
+              // Detect negative from red class or minus sign
+              const isRed = pctEl.className.includes("red");
+              if (isRed && changePct > 0) changePct = -changePct;
               break;
             }
           }
+          // Fallback: look for any text with % in the cell
+          const cellText = cell.textContent || "";
+          const fallbackMatch = cellText.match(/([+-]?[\d,.]+)\s*%/);
+          if (fallbackMatch) {
+            changePct = parseFloat(fallbackMatch[1].replace(",", ""));
+            // Check for downward indicators
+            if (cell.querySelector('[class*="red"]') || cell.querySelector('.lucide-trending-down')) {
+              if (changePct > 0) changePct = -changePct;
+            }
+            break;
+          }
         }
 
-        return { name, numberText, setName, rarity, price, changePct, imageUrl };
+        // Calculate dollar/pound change from price and percentage
+        const dollarChange = price > 0 && changePct !== 0
+          ? price - (price / (1 + changePct / 100))
+          : 0;
+
+        return { name, numberText, setName, rarity, price, changePct, dollarChange, imageUrl };
       }).filter((r): r is NonNullable<typeof r> => r !== null && r.name.length > 0)
     );
 
     console.log(`[pokepulse] Report table: ${rawCards.length} rows`);
+    // Debug: log first few rows so we can verify % extraction
+    for (const c of rawCards.slice(0, 3)) {
+      console.log(`[pokepulse]   ${c.name}: ${c.changePct}% | £${c.price.toFixed(2)} | Δ£${c.dollarChange.toFixed(2)}`);
+    }
 
     // Sort by absolute % change descending (biggest movers first)
     rawCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
@@ -426,10 +480,11 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
       rarity: c.rarity,
       type: "",
       price: c.price,
-      dollarChange: 0,
+      dollarChange: c.dollarChange,
       percentChange: c.changePct,
       tcgPlayerUrl: "",
       imageUrl: c.imageUrl,
+      currency: "£",
     }));
 
     const cardsWithImages = cards.filter(

@@ -10,6 +10,8 @@ export interface CardData {
   percentChange: number;
   tcgPlayerUrl: string;
   imageUrl?: string;
+  /** Currency symbol for display (default "$") */
+  currency?: string;
 }
 
 export interface PipelineConfig {
