@@ -418,15 +418,29 @@ export async function generateTitleSlide(
   drawRoundedRect(ctx, (WIDTH - lineW) / 2, HEIGHT * 0.27, lineW, 5, 3);
   ctx.fill();
 
-  // Main title
+  // Main title — auto-scale to fit within canvas (with padding)
+  const titleText = options.title || "TOP MOVERS";
+  const maxTitleWidth = WIDTH - 80; // 40px padding each side
+  let titleSize = 100;
+  ctx.font = `bold ${titleSize}px ${F}`;
+  while (ctx.measureText(titleText).width > maxTitleWidth && titleSize > 40) {
+    titleSize -= 4;
+    ctx.font = `bold ${titleSize}px ${F}`;
+  }
   ctx.fillStyle = theme.textWhite;
-  ctx.font = `bold 100px ${F}`;
-  ctx.fillText(options.title || "TOP MOVERS", WIDTH / 2, HEIGHT * 0.38);
+  ctx.fillText(titleText, WIDTH / 2, HEIGHT * 0.38);
 
-  // Subtitle
+  // Subtitle — auto-scale similarly
+  const subtitleText = options.subtitle || "POKEMON TCG";
+  const maxSubWidth = WIDTH - 100;
+  let subSize = 54;
+  ctx.font = `bold ${subSize}px ${F}`;
+  while (ctx.measureText(subtitleText).width > maxSubWidth && subSize > 28) {
+    subSize -= 2;
+    ctx.font = `bold ${subSize}px ${F}`;
+  }
   ctx.fillStyle = theme.accent;
-  ctx.font = `bold 54px ${F}`;
-  ctx.fillText(options.subtitle || "POKEMON TCG", WIDTH / 2, HEIGHT * 0.46);
+  ctx.fillText(subtitleText, WIDTH / 2, HEIGHT * 0.46);
 
   // Divider
   const divW = 320;

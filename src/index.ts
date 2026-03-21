@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readdir } from "fs/promises";
+import { mkdir, writeFile, readdir, access } from "fs/promises";
 import { scrapeTopCards, scrapeSetCards, downloadCardImages } from "./scraper.js";
 import { generateImage, generateSlides } from "./image-generator.js";
 import type { CardData, MarketTrend } from "./types.js";
@@ -77,15 +77,36 @@ async function run(
   cards = await downloadCardImages(cards, `${runDir}/images`);
   await writeFile(`${runDir}/cards.json`, JSON.stringify(cards, null, 2));
 
-  // Pick a random music track
+  // Pick music track — each video type gets a preferred track for variety
+  // Falls back to random if the preferred file is missing
+  const MUSIC_MAP: Record<string, string> = {
+    "pokepulse-7d-price-movers":    "music-energetic.mp3",
+    "pokepulse-weekly-best-sellers": "music-upbeat.mp3",
+    "pokepulse-monthly-best-sellers": "music-lofi.mp3",
+    "pokepulse-7d-psa10-movers":    "music-tech.mp3",
+  };
   let musicPath = "assets/music.mp3";
   try {
-    const assetFiles = await readdir("assets");
-    const mp3s = assetFiles.filter((f) => f.endsWith(".mp3"));
-    if (mp3s.length > 0) {
-      const pick = mp3s[Math.floor(Math.random() * mp3s.length)];
-      musicPath = `assets/${pick}`;
-      console.log(`Using music: ${pick}`);
+    const preferred = preset?.name ? MUSIC_MAP[preset.name] : undefined;
+    if (preferred) {
+      const preferredPath = `assets/${preferred}`;
+      try {
+        await access(preferredPath);
+        musicPath = preferredPath;
+        console.log(`Using music (matched): ${preferred}`);
+      } catch {
+        console.log(`Preferred track ${preferred} not found, picking random`);
+      }
+    }
+    // If no preferred match was used, pick randomly
+    if (musicPath === "assets/music.mp3") {
+      const assetFiles = await readdir("assets");
+      const mp3s = assetFiles.filter((f) => f.endsWith(".mp3"));
+      if (mp3s.length > 0) {
+        const pick = mp3s[Math.floor(Math.random() * mp3s.length)];
+        musicPath = `assets/${pick}`;
+        console.log(`Using music (random): ${pick}`);
+      }
     }
   } catch { /* use default */ }
 
