@@ -1,5 +1,5 @@
 import { readFile, stat } from "fs/promises";
-import type { CardData, MarketTrend } from "./types.js";
+import type { CardData, MarketTrend, SlideDisplayMode } from "./types.js";
 
 const GRAPH_API = "https://graph.facebook.com/v21.0";
 const RUPLOAD_API = "https://rupload.facebook.com/video-upload/v21.0";
@@ -19,7 +19,8 @@ function getCredentials(): { pageId: string; accessToken: string } {
 function generateDescription(
   cards: CardData[],
   period: string,
-  marketTrends?: MarketTrend[]
+  marketTrends?: MarketTrend[],
+  displayMode: SlideDisplayMode = "price-and-percent"
 ): string {
   const periodLabel =
     period === "24h"
@@ -30,10 +31,16 @@ function generateDescription(
           ? "This Month"
           : "90 Days";
 
-  const lines = [
-    `Top Pokémon cards with the biggest price moves (${periodLabel}).`,
-    "",
-  ];
+  let intro: string;
+  if (displayMode === "sales-7d") {
+    intro = `Top ${cards.length} best selling Pokémon cards this week.`;
+  } else if (displayMode === "sales-30d") {
+    intro = `Top ${cards.length} best selling Pokémon cards this month.`;
+  } else {
+    intro = `Top Pokémon cards with the biggest price moves (${periodLabel}).`;
+  }
+
+  const lines = [intro, ""];
 
   if (marketTrends && marketTrends.length > 0) {
     lines.push("Market Snapshot:");
@@ -44,12 +51,32 @@ function generateDescription(
     lines.push("");
   }
 
+  lines.push("Rankings:");
+  if (displayMode === "sales-7d") {
+    lines.push(
+      ...cards.map((c) => {
+        const cur = c.currency || "$";
+        return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (${c.salesVolume7d ?? 0} sold)`;
+      })
+    );
+  } else if (displayMode === "sales-30d") {
+    lines.push(
+      ...cards.map((c) => {
+        const cur = c.currency || "$";
+        return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (${c.salesVolume30d ?? 0} sold)`;
+      })
+    );
+  } else {
+    lines.push(
+      ...cards.map((c) => {
+        const cur = c.currency || "$";
+        const sign = c.percentChange >= 0 ? "+" : "";
+        return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (${sign}${c.percentChange.toFixed(0)}%)`;
+      })
+    );
+  }
+
   lines.push(
-    "Rankings:",
-    ...cards.map((c) => {
-      const cur = c.currency || "$";
-      return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (+${c.percentChange.toFixed(0)}%)`;
-    }),
     "",
     "Pokemon TCG Price Watch",
     "",
@@ -70,10 +97,11 @@ export async function uploadToFacebook(
   videoPath: string,
   cards: CardData[],
   period: string,
-  marketTrends?: MarketTrend[]
+  marketTrends?: MarketTrend[],
+  displayMode: SlideDisplayMode = "price-and-percent"
 ): Promise<{ url: string }> {
   const { pageId, accessToken } = getCredentials();
-  const description = generateDescription(cards, period, marketTrends);
+  const description = generateDescription(cards, period, marketTrends, displayMode);
 
   // --- Phase 1: Initialize ---
   console.log("[facebook] Initializing Reel upload…");
@@ -127,7 +155,9 @@ export async function uploadToFacebook(
       upload_phase: "finish",
       video_id: videoId,
       access_token: accessToken,
-      title: `Pokémon TCG Price Movers`,
+      title: displayMode === "sales-7d" || displayMode === "sales-30d"
+        ? `Pokémon TCG Best Sellers`
+        : `Pokémon TCG Price Movers`,
       description,
       published: true,
     }),

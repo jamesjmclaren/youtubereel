@@ -149,7 +149,8 @@ async function run(
 
     // YouTube
     console.log("\n━━━ Step 5a: Uploading to YouTube ━━━");
-    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends);
+    const displayModeForUpload = preset?.displayMode || "price-and-percent";
+    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends, displayModeForUpload);
     usedTitles.push(title);
     console.log(`YouTube: ${url}`);
 
@@ -157,7 +158,7 @@ async function run(
     if (process.env.FB_PAGE_ID && process.env.FB_PAGE_ACCESS_TOKEN) {
       console.log("\n━━━ Step 5b: Uploading to Facebook ━━━");
       try {
-        const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends);
+        const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends, displayModeForUpload);
         console.log(`Facebook: ${fb.url}`);
       } catch (err) {
         console.error(`[pipeline] Facebook upload failed: ${(err as Error).message}`);
