@@ -256,7 +256,8 @@ export async function renderSlideshow(
     if (cardSlides.length > 0) {
       const tickerItems = cardSlides.map(c => {
         const sign = c.percentChange >= 0 ? "+" : "";
-        return `#${c.rank}  ${sign}${c.percentChange.toFixed(0)}%%  $${c.price.toFixed(2)}`;
+        const cur = c.currency || "$";
+        return `#${c.rank}  ${sign}${c.percentChange.toFixed(0)}%%  ${cur}${c.price.toFixed(2)}`;
       });
       const tickerText = tickerItems.join("   *   ") + "   *   ";
       filterParts.push(

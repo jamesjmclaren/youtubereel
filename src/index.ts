@@ -6,7 +6,8 @@ import { renderVideo, renderSlideshow, videoDuration } from "./video-renderer.js
 import { uploadToYouTube, getAuthUrl, exchangeCode } from "./uploader.js";
 import { CONTENT_PRESETS, getPresetForToday, getPresetForTodayWithSets, buildSetPresets } from "./presets.js";
 import type { PipelineConfig, ContentPreset } from "./types.js";
-import { scrapeMarketTrends, formatMarketSummary, suggestDirection } from "./pokepulse.js";
+import { scrapeMarketTrends, formatMarketSummary, suggestDirection, scrapePokePulseCards } from "./pokepulse.js";
+import { uploadToFacebook } from "./facebook-uploader.js";
 
 /** Titles used in this session — prevents duplicate titles across dual-mode videos */
 const usedTitles: string[] = [];
@@ -50,7 +51,9 @@ async function run(
   // Step 1: Scrape
   console.log("\n━━━ Step 1: Scraping cards ━━━");
   let cards: CardData[];
-  if (preset?.setSlug) {
+  if (preset?.source === "pokepulse") {
+    cards = await scrapePokePulseCards(config.topN);
+  } else if (preset?.setSlug) {
     cards = await scrapeSetCards({
       setSlug: preset.setSlug,
       period: config.period,
@@ -97,8 +100,8 @@ async function run(
 
   const duration = videoDuration(cards.length);
 
-  // Alternate between grid and slideshow style (50/50)
-  const useSlideshow = Math.random() > 0.5;
+  // Force slideshow for PokePulse presets, otherwise 50/50 random
+  const useSlideshow = preset?.forceSlideshow || Math.random() > 0.5;
   const videoPath = `${runDir}/short.mp4`;
 
   if (useSlideshow) {
@@ -136,11 +139,28 @@ async function run(
 
   // Step 5: Upload
   if (!skipUpload) {
-    console.log("\n━━━ Step 5: Uploading to YouTube ━━━");
     const marketTrends = await fetchMarketTrends();
+
+    // YouTube
+    console.log("\n━━━ Step 5a: Uploading to YouTube ━━━");
     const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends);
     usedTitles.push(title);
-    console.log(`\n✅ Done! Video live at: ${url}`);
+    console.log(`YouTube: ${url}`);
+
+    // Facebook Reels (optional — only if credentials are set)
+    if (process.env.FB_PAGE_ID && process.env.FB_PAGE_ACCESS_TOKEN) {
+      console.log("\n━━━ Step 5b: Uploading to Facebook ━━━");
+      try {
+        const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends);
+        console.log(`Facebook: ${fb.url}`);
+      } catch (err) {
+        console.error(`[pipeline] Facebook upload failed: ${(err as Error).message}`);
+      }
+    } else {
+      console.log("\n━━━ Step 5b: Skipped Facebook (no credentials) ━━━");
+    }
+
+    console.log(`\n✅ Done! Videos uploaded`);
   } else {
     console.log("\n━━━ Step 5: Skipped upload (--no-upload) ━━━");
     console.log(`\n✅ Done! Output in: ${runDir}/`);
@@ -235,7 +255,6 @@ if (args.includes("--auth")) {
       }
     }
 
-    const setPresets = await buildSetPresets(4);
     let failures = 0;
 
     console.log("═══ DUAL MODE: 2 videos tonight ═══");
@@ -248,19 +267,25 @@ if (args.includes("--auth")) {
       failures++;
     }
 
-    let setSuccess = false;
-    for (const setPreset of setPresets) {
-      console.log(`\n── Video 2: ${setPreset.title} ──`);
-      try {
-        await runPreset(setPreset);
-        setSuccess = true;
-        break;
-      } catch (err) {
-        console.warn(`[pipeline] ${setPreset.name} failed: ${(err as Error).message}, trying next set...`);
-      }
-    }
-    if (!setSuccess) {
-      console.error("[pipeline] All set presets failed.");
+    // Video 2: PokePulse UK market movers — 10 cards, slideshow style
+    const pokepulsePreset: ContentPreset = {
+      name: "pokepulse-uk-movers",
+      title: "UK MARKET MOVERS",
+      subtitle: "Top movers from PulseTCG UK",
+      direction: "gainers",
+      period: "7d",
+      priceFilter: "",
+      topN: 10,
+      theme: "emerald",
+      source: "pokepulse",
+      forceSlideshow: true,
+    };
+
+    console.log(`\n── Video 2: ${pokepulsePreset.title} ──`);
+    try {
+      await runPreset(pokepulsePreset);
+    } catch (err) {
+      console.error(`[pipeline] PokePulse video failed: ${(err as Error).message}`);
       failures++;
     }
 
