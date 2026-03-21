@@ -381,60 +381,148 @@ export async function scrapePokePulseCards(
     const marketUrl = `${BASE_URL}/market`;
     console.log(`[pokepulse] Navigating to ${marketUrl}`);
     await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(3000);
 
-    // Find the right report link by matching title text
-    if (reportName) {
+    // Debug: dump the current URL and page structure to understand the market page
+    console.log(`[pokepulse] Current URL: ${page.url()}`);
+
+    // Dump ALL links on the page to find the right selector
+    const allLinks = await page.$$eval("a[href]", (links) =>
+      links.map(l => ({
+        href: l.getAttribute("href") || "",
+        text: (l.textContent || "").trim().slice(0, 100),
+      })).filter(l => l.href.includes("market") || l.href.includes("analysis") || l.href.includes("report"))
+    );
+    console.log(`[pokepulse] Market-related links on page (${allLinks.length}):`);
+    for (const link of allLinks) {
+      console.log(`[pokepulse]   href="${link.href}" text="${link.text}"`);
+    }
+
+    // Also dump headings and card-like sections to understand the page layout
+    const headings = await page.$$eval("h1, h2, h3, h4, h5, h6", (els) =>
+      els.map(el => ({ tag: el.tagName, text: (el.textContent || "").trim().slice(0, 100) }))
+    );
+    console.log(`[pokepulse] Headings on page:`);
+    for (const h of headings) {
+      console.log(`[pokepulse]   <${h.tag.toLowerCase()}> ${h.text}`);
+    }
+
+    // Try multiple selectors for report links
+    const reportSelectors = [
+      'a[href*="/market/analysis"]',
+      'a[href*="reportId"]',
+      'a[href*="/market/"]',
+      'a[href*="analysis"]',
+      'a[href*="report"]',
+    ];
+
+    let reportLinks: Awaited<ReturnType<typeof page.$$>> = [];
+    let usedSelector = "";
+    for (const sel of reportSelectors) {
+      const links = await page.$$(sel);
+      if (links.length > 0) {
+        reportLinks = links;
+        usedSelector = sel;
+        console.log(`[pokepulse] Found ${links.length} links with selector: ${sel}`);
+        break;
+      }
+    }
+
+    if (reportLinks.length === 0) {
+      // Last resort: look for any clickable elements with report-related text
+      console.log(`[pokepulse] No report links found with standard selectors, searching by text...`);
+      const textMatches = await page.$$('a, button, [role="link"], [role="button"]');
+      for (const el of textMatches) {
+        const text = ((await el.textContent()) || "").trim().toLowerCase();
+        if (text.includes("price mover") || text.includes("best seller") || text.includes("psa")) {
+          reportLinks.push(el);
+          console.log(`[pokepulse] Found text-match element: "${text.slice(0, 80)}"`);
+        }
+      }
+    }
+
+    // Log all found report links
+    console.log(`[pokepulse] Report links found: ${reportLinks.length} (selector: ${usedSelector || "text-match"})`);
+    for (let i = 0; i < Math.min(reportLinks.length, 20); i++) {
+      const href = await reportLinks[i].getAttribute("href");
+      const text = ((await reportLinks[i].textContent()) || "").trim().slice(0, 100);
+      console.log(`[pokepulse]   [${i}] href="${href}" text="${text}"`);
+    }
+
+    // Find and click the matching report
+    let navigatedToReport = false;
+    if (reportName && reportLinks.length > 0) {
       console.log(`[pokepulse] Looking for report: "${reportName}"`);
-      const reportLinks = await page.$$('a[href*="/market/analysis"]');
-      let found = false;
+      // Exact substring match first
       for (const link of reportLinks) {
         const text = ((await link.textContent()) || "").trim();
         if (text.toLowerCase().includes(reportName.toLowerCase())) {
           console.log(`[pokepulse] Found matching report: "${text}"`);
           await link.click();
-          found = true;
+          navigatedToReport = true;
           break;
         }
       }
-      if (!found) {
-        // Fallback: try to find by partial match on key words
+      // Partial keyword match
+      if (!navigatedToReport) {
         const keywords = reportName.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2);
         for (const link of reportLinks) {
           const text = ((await link.textContent()) || "").toLowerCase();
           const matchCount = keywords.filter(kw => text.includes(kw)).length;
-          if (matchCount >= keywords.length * 0.5) {
-            console.log(`[pokepulse] Partial match found: "${text}"`);
+          if (matchCount >= Math.ceil(keywords.length * 0.4)) {
+            console.log(`[pokepulse] Partial match (${matchCount}/${keywords.length} keywords): "${text.slice(0, 80)}"`);
             await link.click();
-            found = true;
+            navigatedToReport = true;
             break;
           }
         }
       }
-      if (!found) {
-        // List available reports for debugging
-        const available = await page.$$eval('a[href*="/market/analysis"]', (links) =>
-          links.map(l => (l.textContent || "").trim()).filter(t => t.length > 0)
-        );
-        console.warn(`[pokepulse] Report "${reportName}" not found. Available: ${available.join(" | ")}`);
-        // Fall back to first report
+      if (!navigatedToReport) {
+        console.warn(`[pokepulse] Report "${reportName}" not found among ${reportLinks.length} links`);
+        // Fall back to first report link
         if (reportLinks.length > 0) {
+          const fallbackText = ((await reportLinks[0].textContent()) || "").trim();
+          console.log(`[pokepulse] Falling back to first report: "${fallbackText.slice(0, 80)}"`);
           await reportLinks[0].click();
+          navigatedToReport = true;
         }
       }
-    } else {
-      // No specific report — click the first one
-      const reportLink = page.locator('a[href*="/market/analysis"]').first();
-      if ((await reportLink.count()) > 0) {
-        await reportLink.click();
-      }
+    } else if (reportLinks.length > 0) {
+      await reportLinks[0].click();
+      navigatedToReport = true;
     }
 
-    await page.waitForLoadState("networkidle");
-    await page.waitForTimeout(2000);
+    if (navigatedToReport) {
+      await page.waitForLoadState("networkidle");
+      await page.waitForTimeout(2000);
+    }
+
+    console.log(`[pokepulse] After navigation URL: ${page.url()}`);
 
     // Wait for the table to appear
-    await page.waitForSelector("table tbody tr", { timeout: 10_000 });
+    try {
+      await page.waitForSelector("table tbody tr", { timeout: 10_000 });
+    } catch {
+      // Table not found — dump page structure for debugging
+      const bodyText = await page.$eval("body", (b) => (b.textContent || "").trim().slice(0, 500));
+      console.warn(`[pokepulse] No table found on page. URL: ${page.url()}`);
+      console.warn(`[pokepulse] Body text preview: ${bodyText}`);
+
+      // Check if there's a different container (cards/grid instead of table)
+      const containers = await page.$$eval("div, section", (els) =>
+        els.map(el => ({
+          cls: el.className?.slice(0, 60) || "",
+          children: el.children.length,
+          text: (el.textContent || "").trim().slice(0, 60),
+        })).filter(e => e.children > 5 && e.text.length > 20).slice(0, 10)
+      );
+      console.warn(`[pokepulse] Top containers:`);
+      for (const c of containers) {
+        console.warn(`[pokepulse]   class="${c.cls}" children=${c.children} text="${c.text}"`);
+      }
+
+      throw new Error("No report table found on page");
+    }
 
     // Debug: dump first row's cells so we can see the structure
     const debugCells = await page.$$eval("table tbody tr:first-child td", (cells) =>
