@@ -349,10 +349,19 @@ export function formatMarketSummary(trends: MarketTrend[]): string | null {
 
 /**
  * Scrape top card data from PokePulse market report table.
- * Navigates to /market → clicks first report → parses the table rows.
- * Returns CardData[] with image URLs, prices (GBP), and % changes.
+ * Navigates to /market, finds the report by name, and parses the table rows.
+ * Returns CardData[] with image URLs, prices (GBP), sales volumes, and % changes.
+ *
+ * @param topN - Number of top cards to return
+ * @param reportName - Report title to match (e.g. "7-Day Price Movers - Cards (Top 50)")
+ *                     Defaults to first report if not specified.
+ * @param sortBy - How to sort results: "percent" (default) or "rank" (keep original order)
  */
-export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
+export async function scrapePokePulseCards(
+  topN = 10,
+  reportName?: string,
+  sortBy: "percent" | "rank" = "percent"
+): Promise<CardData[]> {
   let browser: Browser | undefined;
 
   try {
@@ -368,10 +377,60 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
 
     await login(page, email, password);
 
-    // Navigate directly to the 7-day price movers report (reportId=1)
-    const reportUrl = `${BASE_URL}/market/analysis?reportId=1`;
-    console.log(`[pokepulse] Navigating to ${reportUrl}`);
-    await page.goto(reportUrl, { waitUntil: "networkidle", timeout: 20_000 });
+    // Navigate to the market page to find reports
+    const marketUrl = `${BASE_URL}/market`;
+    console.log(`[pokepulse] Navigating to ${marketUrl}`);
+    await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
+    await page.waitForTimeout(2000);
+
+    // Find the right report link by matching title text
+    if (reportName) {
+      console.log(`[pokepulse] Looking for report: "${reportName}"`);
+      const reportLinks = await page.$$('a[href*="/market/analysis"]');
+      let found = false;
+      for (const link of reportLinks) {
+        const text = ((await link.textContent()) || "").trim();
+        if (text.toLowerCase().includes(reportName.toLowerCase())) {
+          console.log(`[pokepulse] Found matching report: "${text}"`);
+          await link.click();
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        // Fallback: try to find by partial match on key words
+        const keywords = reportName.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2);
+        for (const link of reportLinks) {
+          const text = ((await link.textContent()) || "").toLowerCase();
+          const matchCount = keywords.filter(kw => text.includes(kw)).length;
+          if (matchCount >= keywords.length * 0.5) {
+            console.log(`[pokepulse] Partial match found: "${text}"`);
+            await link.click();
+            found = true;
+            break;
+          }
+        }
+      }
+      if (!found) {
+        // List available reports for debugging
+        const available = await page.$$eval('a[href*="/market/analysis"]', (links) =>
+          links.map(l => (l.textContent || "").trim()).filter(t => t.length > 0)
+        );
+        console.warn(`[pokepulse] Report "${reportName}" not found. Available: ${available.join(" | ")}`);
+        // Fall back to first report
+        if (reportLinks.length > 0) {
+          await reportLinks[0].click();
+        }
+      }
+    } else {
+      // No specific report — click the first one
+      const reportLink = page.locator('a[href*="/market/analysis"]').first();
+      if ((await reportLink.count()) > 0) {
+        await reportLink.click();
+      }
+    }
+
+    await page.waitForLoadState("networkidle");
     await page.waitForTimeout(2000);
 
     // Wait for the table to appear
@@ -390,7 +449,7 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
     const rawCards = await page.$$eval("table tbody tr", (trs) =>
       trs.map((tr) => {
         const cells = Array.from(tr.querySelectorAll("td"));
-        if (cells.length < 6) return null;
+        if (cells.length < 4) return null;
 
         // Product cell (index 1): contains image, name, and number
         const productCell = cells[1];
@@ -410,21 +469,26 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
         const rarityEl = cells[3]?.querySelector("span.text-xs");
         const rarity = (rarityEl?.textContent || "").trim();
 
-        // Market Price (index 4) — contains £X.XX in a purple span
-        const priceEl = cells[4]?.querySelector("span.font-mono, span.text-purple-600");
-        const priceText = priceEl?.textContent || "";
-        const priceMatch = priceText.match(/£([\d,.]+)/);
-        const price = priceMatch ? parseFloat(priceMatch[1].replace(",", "")) : 0;
+        // Market Price — look in cells for £X.XX
+        let price = 0;
+        for (const cell of cells) {
+          const priceEl = cell.querySelector("span.font-mono, span.text-purple-600");
+          const priceText = priceEl?.textContent || "";
+          const priceMatch = priceText.match(/£([\d,.]+)/);
+          if (priceMatch) {
+            price = parseFloat(priceMatch[1].replace(",", ""));
+            break;
+          }
+        }
 
-        // 7-Day Change — look for coloured percentage spans across multiple class variants
+        // Percentage change — look for coloured percentage spans
         let changePct = 0;
         const pctSelectors = [
           "span.text-green-600", "span.text-green-500", "span.text-green-400",
           "span.text-red-600", "span.text-red-500", "span.text-red-400",
           "span.text-emerald-600", "span.text-emerald-500",
         ].join(", ");
-        // Skip the price cell (index 4) — only look in cells 5+ for percentage
-        for (let ci = 5; ci < cells.length; ci++) {
+        for (let ci = 4; ci < cells.length; ci++) {
           const cell = cells[ci];
           if (!cell) continue;
           const pctEl = cell.querySelector(pctSelectors);
@@ -433,18 +497,15 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
             const match = pctText.match(/([+-]?[\d,.]+)\s*%/);
             if (match) {
               changePct = parseFloat(match[1].replace(",", ""));
-              // Detect negative from red class or minus sign
               const isRed = pctEl.className.includes("red");
               if (isRed && changePct > 0) changePct = -changePct;
               break;
             }
           }
-          // Fallback: look for any text with % in the cell
           const cellText = cell.textContent || "";
           const fallbackMatch = cellText.match(/([+-]?[\d,.]+)\s*%/);
           if (fallbackMatch) {
             changePct = parseFloat(fallbackMatch[1].replace(",", ""));
-            // Check for downward indicators
             if (cell.querySelector('[class*="red"]') || cell.querySelector('.lucide-trending-down')) {
               if (changePct > 0) changePct = -changePct;
             }
@@ -452,23 +513,42 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
           }
         }
 
-        // Calculate dollar/pound change from price and percentage
+        // Sales volumes — look for columns with numeric values (7-Day Volume, 30-Day Volume)
+        // These are typically the last 2 numeric columns
+        const numericCells: number[] = [];
+        for (let ci = 5; ci < cells.length; ci++) {
+          const cell = cells[ci];
+          if (!cell) continue;
+          const spanEl = cell.querySelector("span.text-xs.font-medium, span.font-mono");
+          const text = (spanEl?.textContent || cell.textContent || "").trim();
+          const num = parseInt(text.replace(/,/g, ""));
+          if (!isNaN(num) && !/[%£$€]/.test(text)) {
+            numericCells.push(num);
+          }
+        }
+
+        // First numeric is typically 7d volume, second is 30d volume
+        const salesVolume7d = numericCells[0] ?? undefined;
+        const salesVolume30d = numericCells[1] ?? undefined;
+
+        // Calculate pound change from price and percentage
         const dollarChange = price > 0 && changePct !== 0
           ? price - (price / (1 + changePct / 100))
           : 0;
 
-        return { name, numberText, setName, rarity, price, changePct, dollarChange, imageUrl };
+        return { name, numberText, setName, rarity, price, changePct, dollarChange, imageUrl, salesVolume7d, salesVolume30d };
       }).filter((r): r is NonNullable<typeof r> => r !== null && r.name.length > 0)
     );
 
     console.log(`[pokepulse] Report table: ${rawCards.length} rows`);
-    // Debug: log first few rows so we can verify % extraction
     for (const c of rawCards.slice(0, 3)) {
-      console.log(`[pokepulse]   ${c.name}: ${c.changePct}% | £${c.price.toFixed(2)} | Δ£${c.dollarChange.toFixed(2)}`);
+      console.log(`[pokepulse]   ${c.name}: ${c.changePct}% | £${c.price.toFixed(2)} | 7d vol: ${c.salesVolume7d ?? "?"} | 30d vol: ${c.salesVolume30d ?? "?"}`);
     }
 
-    // Sort by absolute % change descending (biggest movers first)
-    rawCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+    // Sort by absolute % change descending (biggest movers first) or keep original rank
+    if (sortBy === "percent") {
+      rawCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+    }
 
     // Take top N and convert to CardData
     const topCards = rawCards.slice(0, topN);
@@ -485,6 +565,8 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
       tcgPlayerUrl: "",
       imageUrl: c.imageUrl,
       currency: "£",
+      salesVolume7d: c.salesVolume7d,
+      salesVolume30d: c.salesVolume30d,
     }));
 
     const cardsWithImages = cards.filter(

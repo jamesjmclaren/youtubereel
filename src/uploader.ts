@@ -149,7 +149,7 @@ function generateDescription(
         `#${c.rank} ${c.name} — $${c.price.toFixed(2)} (+${c.percentChange.toFixed(0)}%)`
     ),
     "",
-    "Data from TCG Market News & PokePulse • Prices from TCGPlayer",
+    "Pokemon TCG Price Watch",
     "",
     "#Pokemon #PokemonTCG #PokemonCards #TCG #Investing #PriceWatch #Shorts"
   );

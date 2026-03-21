@@ -2,7 +2,33 @@ import { createCanvas, loadImage, GlobalFonts } from "@napi-rs/canvas";
 import { writeFile, readFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
-import type { CardData } from "./types.js";
+import type { CardData, SlideDisplayMode } from "./types.js";
+
+// Approximate fixed exchange rates for basic currency conversion
+const GBP_TO_USD = 1.27;
+const GBP_TO_EUR = 1.17;
+const USD_TO_GBP = 1 / GBP_TO_USD;
+const USD_TO_EUR = GBP_TO_EUR / GBP_TO_USD;
+
+/** Format a price in multiple currencies given the source currency */
+function multiCurrencyPrice(price: number, sourceCurrency: string): string {
+  let gbp: number, usd: number, eur: number;
+  if (sourceCurrency === "£") {
+    gbp = price;
+    usd = price * GBP_TO_USD;
+    eur = price * GBP_TO_EUR;
+  } else if (sourceCurrency === "€") {
+    eur = price;
+    gbp = price / GBP_TO_EUR;
+    usd = gbp * GBP_TO_USD;
+  } else {
+    // Default: USD
+    usd = price;
+    gbp = price * USD_TO_GBP;
+    eur = price * USD_TO_EUR;
+  }
+  return `£${gbp.toFixed(2)} / $${usd.toFixed(2)} / €${eur.toFixed(2)}`;
+}
 
 // Register bundled Inter font for consistent rendering across platforms
 const fontDir = path.join(import.meta.dirname, "..", "assets", "fonts");
@@ -224,7 +250,7 @@ function drawTitle(ctx: Ctx, theme: ThemeColors, period: string, title?: string,
   // Description line
   ctx.fillStyle = theme.textMuted;
   ctx.font = `20px ${F}`;
-  ctx.fillText("Biggest price movers · TCGPlayer data", WIDTH / 2, 210);
+  ctx.fillText("Pokemon TCG Price Watch", WIDTH / 2, 210);
 }
 
 async function drawCard(
@@ -411,7 +437,7 @@ export async function generateTitleSlide(
   // Caption
   ctx.fillStyle = theme.textMuted;
   ctx.font = `26px ${F}`;
-  ctx.fillText("Price movers  ·  TCGPlayer data", WIDTH / 2, HEIGHT * 0.535);
+  ctx.fillText("Pokemon TCG Price Watch", WIDTH / 2, HEIGHT * 0.535);
 
   // Faint ghost rank behind
   ctx.save();
@@ -529,14 +555,20 @@ export async function generateImage(
 /**
  * Generate individual full-screen slides for each card (for slideshow video).
  * Returns array of image paths.
+ *
+ * @param displayMode - Controls what data is shown:
+ *   - "price-and-percent": price + % gain (Videos 1 & 4)
+ *   - "sales-7d": price + 7-day sales count (Video 2)
+ *   - "sales-30d": price + 30-day sales count (Video 3)
  */
 export async function generateSlides(
   cards: CardData[],
   outputDir: string,
-  options: { theme?: string; title?: string; subtitle?: string; skipPctText?: boolean } = {}
+  options: { theme?: string; title?: string; subtitle?: string; skipPctText?: boolean; displayMode?: SlideDisplayMode } = {}
 ): Promise<string[]> {
   await mkdir(outputDir, { recursive: true });
 
+  const displayMode = options.displayMode || "price-and-percent";
   const paths: string[] = [];
 
   // Intro title slide first
@@ -628,34 +660,57 @@ export async function generateSlides(
       words.forEach((w, i) => ctx.fillText(w, WIDTH / 2, startY + i * lineH));
     }
 
-    // Data section below card
+    // Data section below card — content varies by displayMode
     const dataY = imgY + imgH + 60;
+    const slideCur = card.currency || "$";
 
-    // Percentage — huge (skip if FFmpeg will draw it via count-up animation)
-    if (!options.skipPctText) {
-      ctx.fillStyle = changeColor;
-      ctx.font = `bold 120px ${F}`;
+    if (displayMode === "price-and-percent") {
+      // Percentage — huge (skip if FFmpeg will draw it via count-up animation)
+      if (!options.skipPctText) {
+        ctx.fillStyle = changeColor;
+        ctx.font = `bold 120px ${F}`;
+        ctx.textAlign = "center";
+        const pctText = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
+        ctx.fillText(pctText, WIDTH / 2, dataY + 100);
+      }
+
+      // Multi-currency price
+      ctx.fillStyle = theme.textWhite;
+      ctx.font = `bold 48px ${F}`;
       ctx.textAlign = "center";
-      const pctText = `${isPositive ? "+" : ""}${card.percentChange.toFixed(0)}%`;
-      ctx.fillText(pctText, WIDTH / 2, dataY + 100);
+      ctx.fillText(multiCurrencyPrice(card.price, slideCur), WIDTH / 2, dataY + 175);
+
+    } else if (displayMode === "sales-7d" || displayMode === "sales-30d") {
+      // Sales count — big and prominent
+      const salesCount = displayMode === "sales-7d"
+        ? (card.salesVolume7d ?? 0)
+        : (card.salesVolume30d ?? 0);
+      const salesLabel = displayMode === "sales-7d" ? "7-DAY SALES" : "30-DAY SALES";
+
+      ctx.fillStyle = theme.accent;
+      ctx.font = `bold 100px ${F}`;
+      ctx.textAlign = "center";
+      ctx.fillText(`${salesCount}`, WIDTH / 2, dataY + 90);
+
+      ctx.fillStyle = theme.textMuted;
+      ctx.font = `bold 32px ${F}`;
+      ctx.fillText(salesLabel, WIDTH / 2, dataY + 130);
+
+      // Multi-currency price below
+      ctx.fillStyle = theme.textWhite;
+      ctx.font = `bold 44px ${F}`;
+      ctx.fillText(multiCurrencyPrice(card.price, slideCur), WIDTH / 2, dataY + 195);
     }
 
-    // Price
-    const slideCur = card.currency || "$";
-    ctx.fillStyle = theme.textWhite;
-    ctx.font = `bold 64px ${F}`;
-    ctx.fillText(`${slideCur}${card.price.toFixed(2)}`, WIDTH / 2, dataY + 185);
-
-    // Dollar change
-    ctx.fillStyle = changeColor;
-    ctx.font = `36px ${F}`;
-    const dollarText = `${isPositive ? "\u2191" : "\u2193"} ${slideCur}${Math.abs(card.dollarChange).toFixed(2)}`;
-    ctx.fillText(dollarText, WIDTH / 2, dataY + 235);
-
-    // Set name only at bottom (no product name)
+    // Card name at bottom
     ctx.fillStyle = theme.textMuted;
     ctx.font = `24px ${F}`;
-    ctx.fillText(card.setName, WIDTH / 2, HEIGHT - 110);
+    ctx.textAlign = "center";
+    ctx.fillText(card.name, WIDTH / 2, HEIGHT - 110);
+
+    // Set name below card name
+    ctx.font = `20px ${F}`;
+    ctx.fillText(card.setName, WIDTH / 2, HEIGHT - 80);
 
     const slidePath = path.join(outputDir, `slide-${card.rank}.png`);
     await writeFile(slidePath, canvas.toBuffer("image/png"));

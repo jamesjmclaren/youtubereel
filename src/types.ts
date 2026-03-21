@@ -12,7 +12,17 @@ export interface CardData {
   imageUrl?: string;
   /** Currency symbol for display (default "$") */
   currency?: string;
+  /** 7-day sales volume */
+  salesVolume7d?: number;
+  /** 30-day sales volume */
+  salesVolume30d?: number;
 }
+
+/** Controls what data is shown on each slide */
+export type SlideDisplayMode =
+  | "price-and-percent"   // Videos 1 & 4: price + % gain only
+  | "sales-7d"            // Video 2: price + 7-day sales count
+  | "sales-30d";          // Video 3: price + 30-day sales count
 
 export interface PipelineConfig {
   period: "24h" | "7d" | "30d" | "90d";
@@ -39,6 +49,10 @@ export interface ContentPreset {
   source?: "tcgmarketnews" | "pokepulse";
   /** Force slideshow mode (one card at a time) instead of 50/50 random */
   forceSlideshow?: boolean;
+  /** PokePulse report name to scrape (matched against report titles on the /market page) */
+  pokepulseReport?: string;
+  /** Controls what data is shown on each slide */
+  displayMode?: SlideDisplayMode;
 }
 
 /** Market trend data scraped from PokePulse */
