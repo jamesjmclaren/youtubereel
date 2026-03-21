@@ -293,10 +293,16 @@ export async function scrapeMarketTrends(): Promise<MarketTrend[]> {
       const marketTrends = await parseMarketReports(page);
       reportTrends.push(...marketTrends);
 
-      // Try clicking into the first report to get detailed table data
-      const reportLink = page.locator('a[href*="/market/analysis"]').first();
-      if ((await reportLink.count()) > 0) {
-        await reportLink.click();
+      // Try clicking into the first report card to get detailed table data
+      const firstReportH3 = page.locator("h3").first();
+      if ((await firstReportH3.count()) > 0) {
+        await firstReportH3.evaluate((el) => {
+          let target: HTMLElement | null = el as HTMLElement;
+          while (target && !target.classList.contains("cursor-pointer")) {
+            target = target.parentElement;
+          }
+          (target || el as HTMLElement).click();
+        });
         await page.waitForLoadState("networkidle");
         await page.waitForTimeout(2000);
         const tableTrends = await parseReportTable(page);
@@ -349,10 +355,19 @@ export function formatMarketSummary(trends: MarketTrend[]): string | null {
 
 /**
  * Scrape top card data from PokePulse market report table.
- * Navigates to /market → clicks first report → parses the table rows.
- * Returns CardData[] with image URLs, prices (GBP), and % changes.
+ * Navigates to /market, finds the report by name, and parses the table rows.
+ * Returns CardData[] with image URLs, prices (GBP), sales volumes, and % changes.
+ *
+ * @param topN - Number of top cards to return
+ * @param reportName - Report title to match (e.g. "7-Day Price Movers - Cards (Top 50)")
+ *                     Defaults to first report if not specified.
+ * @param sortBy - How to sort results: "percent" (default) or "rank" (keep original order)
  */
-export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
+export async function scrapePokePulseCards(
+  topN = 10,
+  reportName?: string,
+  sortBy: "percent" | "rank" = "percent"
+): Promise<CardData[]> {
   let browser: Browser | undefined;
 
   try {
@@ -368,14 +383,226 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
 
     await login(page, email, password);
 
-    // Navigate directly to the 7-day price movers report (reportId=1)
-    const reportUrl = `${BASE_URL}/market/analysis?reportId=1`;
-    console.log(`[pokepulse] Navigating to ${reportUrl}`);
-    await page.goto(reportUrl, { waitUntil: "networkidle", timeout: 20_000 });
-    await page.waitForTimeout(2000);
+    // Navigate to the market page to find reports
+    const marketUrl = `${BASE_URL}/market`;
+    console.log(`[pokepulse] Navigating to ${marketUrl}`);
+    await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
+    await page.waitForTimeout(3000);
+
+    console.log(`[pokepulse] Current URL: ${page.url()}`);
+
+    // PokePulse /market page renders reports as clickable <div> cards (not <a> links).
+    // Each card has an <h3> with the report title. We find the right card by matching
+    // the h3 text, then click the card's cursor-pointer ancestor to trigger SPA navigation.
+
+    // Collect all report card titles from h3 elements
+    const reportHeadings = await page.$$("h3");
+    const reportCards: Array<{ heading: typeof reportHeadings[0]; text: string }> = [];
+    for (const h3 of reportHeadings) {
+      const text = ((await h3.textContent()) || "").trim();
+      if (text.length > 0) {
+        reportCards.push({ heading: h3, text });
+      }
+    }
+    console.log(`[pokepulse] Found ${reportCards.length} h3 headings on /market:`);
+    for (const rc of reportCards) {
+      console.log(`[pokepulse]   "${rc.text}"`);
+    }
+
+    // Find and click the matching report card
+    let navigatedToReport = false;
+    if (reportName && reportCards.length > 0) {
+      console.log(`[pokepulse] Looking for report: "${reportName}"`);
+
+      // Substring match: preset name "7-Day Price Movers - Cards" matches h3 "7-Day Price Movers - Cards (Top 50)"
+      let matchedCard = reportCards.find(rc =>
+        rc.text.toLowerCase().includes(reportName.toLowerCase())
+      );
+
+      // Fallback: keyword match
+      if (!matchedCard) {
+        const keywords = reportName.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2);
+        matchedCard = reportCards.find(rc => {
+          const t = rc.text.toLowerCase();
+          const hits = keywords.filter(kw => t.includes(kw)).length;
+          return hits >= Math.ceil(keywords.length * 0.5);
+        });
+      }
+
+      if (matchedCard) {
+        console.log(`[pokepulse] Matched report card: "${matchedCard.text}"`);
+        // Click the closest ancestor with cursor-pointer (the card container), or the h3 itself
+        const clicked = await matchedCard.heading.evaluate((el) => {
+          let target: HTMLElement | null = el as HTMLElement;
+          // Walk up to find the clickable card container
+          while (target && !target.classList.contains("cursor-pointer")) {
+            target = target.parentElement;
+          }
+          if (target) {
+            target.click();
+            return true;
+          }
+          // Fallback: click the h3 itself
+          (el as HTMLElement).click();
+          return true;
+        });
+        if (clicked) navigatedToReport = true;
+      } else {
+        console.warn(`[pokepulse] Report "${reportName}" not found. Available: ${reportCards.map(rc => rc.text).join(", ")}`);
+        // Fall back to first report card
+        if (reportCards.length > 0) {
+          console.log(`[pokepulse] Falling back to first report: "${reportCards[0].text}"`);
+          await reportCards[0].heading.evaluate((el) => {
+            let target: HTMLElement | null = el as HTMLElement;
+            while (target && !target.classList.contains("cursor-pointer")) {
+              target = target.parentElement;
+            }
+            (target || el as HTMLElement).click();
+          });
+          navigatedToReport = true;
+        }
+      }
+    } else if (reportCards.length > 0) {
+      // No specific report requested — click first one
+      await reportCards[0].heading.evaluate((el) => {
+        let target: HTMLElement | null = el as HTMLElement;
+        while (target && !target.classList.contains("cursor-pointer")) {
+          target = target.parentElement;
+        }
+        (target || el as HTMLElement).click();
+      });
+      navigatedToReport = true;
+    }
+
+    if (navigatedToReport) {
+      // Wait for SPA navigation to the report detail page
+      await page.waitForLoadState("networkidle");
+      await page.waitForTimeout(3000);
+    }
+
+    console.log(`[pokepulse] After navigation URL: ${page.url()}`);
 
     // Wait for the table to appear
-    await page.waitForSelector("table tbody tr", { timeout: 10_000 });
+    try {
+      await page.waitForSelector("table tbody tr", { timeout: 10_000 });
+    } catch {
+      // Sometimes the table takes longer on first load — retry once
+      await page.waitForTimeout(3000);
+    }
+
+    // Wait for async data to load — PokePulse lazy-loads some columns (prices, volumes)
+    // which initially show shimmer/skeleton placeholders (div.animate-pulse).
+    // Wait until these placeholders resolve into actual data spans.
+    try {
+      // Wait for at least one price span to appear (font-mono with £ sign)
+      await page.waitForSelector("table tbody span.font-mono", { timeout: 15_000 });
+      console.log("[pokepulse] Price data loaded");
+    } catch {
+      console.warn("[pokepulse] Price data may not have loaded (no span.font-mono found)");
+    }
+
+    // Also wait for shimmer placeholders to disappear from the table
+    try {
+      await page.waitForFunction(
+        () => {
+          const table = document.querySelector("table tbody");
+          if (!table) return true;
+          const shimmers = table.querySelectorAll(".animate-pulse");
+          return shimmers.length === 0;
+        },
+        { timeout: 15_000 }
+      );
+      console.log("[pokepulse] All shimmer placeholders resolved");
+    } catch {
+      console.warn("[pokepulse] Some shimmer placeholders may still be loading");
+      // Give it a final extra wait
+      await page.waitForTimeout(3000);
+    }
+
+    // Re-check for table rows after waiting for data
+    try {
+      await page.waitForSelector("table tbody tr", { timeout: 5_000 });
+    } catch {
+      // Table not found — dump page structure for debugging
+      const bodyText = await page.$eval("body", (b) => (b.textContent || "").trim().slice(0, 500));
+      console.warn(`[pokepulse] No table found on page. URL: ${page.url()}`);
+      console.warn(`[pokepulse] Body text preview: ${bodyText}`);
+
+      // Check if there's a different container (cards/grid instead of table)
+      const containers = await page.$$eval("div, section", (els) =>
+        els.map(el => ({
+          cls: el.className?.slice(0, 60) || "",
+          children: el.children.length,
+          text: (el.textContent || "").trim().slice(0, 60),
+        })).filter(e => e.children > 5 && e.text.length > 20).slice(0, 10)
+      );
+      console.warn(`[pokepulse] Top containers:`);
+      for (const c of containers) {
+        console.warn(`[pokepulse]   class="${c.cls}" children=${c.children} text="${c.text}"`);
+      }
+
+      throw new Error("No report table found on page");
+    }
+
+    // Detect column layout from table headers
+    // Price Movers: Checkbox | Product | Set | Rarity | Market Price | Price Chart | 7-Day Change | 7-Day Volume | 30-Day Volume (9 cols)
+    // Volume Movers: Checkbox | Product | Set | Rarity | Market Price | Price Chart | 7-Day Volume | 30-Day Volume (8 cols, no 7-Day Change)
+    const columnHeaders = await page.$$eval("table thead th", (ths) =>
+      ths.map((th, i) => ({ index: i, text: (th.textContent || "").trim().toLowerCase() }))
+    );
+    console.log("[pokepulse] Table headers:");
+    for (const ch of columnHeaders) {
+      console.log(`[pokepulse]   [${ch.index}] "${ch.text}"`);
+    }
+
+    // Build column index map from headers
+    // Note: "price" must match "market price" but NOT "price chart", so use "market price" first
+    // Headers may contain extra whitespace or differ in casing — all are lowercased above
+    const colMap = {
+      product: columnHeaders.find(h => h.text.includes("product"))?.index ?? 1,
+      set: columnHeaders.find(h => h.text === "set")?.index ?? 2,
+      rarity: columnHeaders.find(h => h.text.includes("rarity"))?.index ?? 3,
+      price: columnHeaders.find(h => h.text.includes("market price") || (h.text.includes("price") && !h.text.includes("chart")))?.index ?? 4,
+      change7d: columnHeaders.find(h => h.text.includes("change") || h.text.includes("7-day %") || h.text.includes("7d %"))?.index ?? -1,  // -1 = not present
+      vol7d: columnHeaders.find(h => h.text.includes("7-day vol") || h.text.includes("7d vol") || h.text.includes("7-day volume"))?.index ?? -1,
+      vol30d: columnHeaders.find(h => h.text.includes("30-day vol") || h.text.includes("30d vol") || h.text.includes("30-day volume"))?.index ?? -1,
+    };
+
+    // Fallback: if change column not found by header, detect it from first row content
+    // (look for a cell containing a colored % span like +126.6%)
+    if (colMap.change7d === -1) {
+      const changeColIdx = await page.$$eval("table tbody tr:first-child td", (cells) => {
+        for (let i = 4; i < cells.length; i++) {
+          const pctEl = cells[i].querySelector(
+            "span.text-green-600, span.text-green-500, span.text-red-600, span.text-red-500"
+          );
+          if (pctEl && /[+-]?[\d,.]+\s*%/.test(pctEl.textContent || "")) {
+            return i;
+          }
+        }
+        return -1;
+      });
+      if (changeColIdx >= 0) {
+        colMap.change7d = changeColIdx;
+        console.log(`[pokepulse] Detected change column from cell content at index ${changeColIdx}`);
+      }
+    }
+
+    // Fallback: if vol columns not found by header text, use last two numeric columns
+    if (colMap.vol7d === -1 || colMap.vol30d === -1) {
+      const totalCols = columnHeaders.length;
+      if (totalCols >= 9) {
+        // 9-col layout (Price Movers): vol7d=7, vol30d=8
+        if (colMap.vol7d === -1) colMap.vol7d = 7;
+        if (colMap.vol30d === -1) colMap.vol30d = 8;
+      } else if (totalCols >= 8) {
+        // 8-col layout (Volume Movers): vol7d=6, vol30d=7
+        if (colMap.vol7d === -1) colMap.vol7d = 6;
+        if (colMap.vol30d === -1) colMap.vol30d = 7;
+      }
+    }
+
+    console.log(`[pokepulse] Column map: product=${colMap.product} set=${colMap.set} rarity=${colMap.rarity} price=${colMap.price} change=${colMap.change7d} vol7d=${colMap.vol7d} vol30d=${colMap.vol30d}`);
 
     // Debug: dump first row's cells so we can see the structure
     const debugCells = await page.$$eval("table tbody tr:first-child td", (cells) =>
@@ -386,89 +613,124 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
       console.log(`[pokepulse]   [${dc.index}] text="${dc.text}" html=${dc.html}`);
     }
 
-    // Parse table rows for full card data
-    const rawCards = await page.$$eval("table tbody tr", (trs) =>
+    // Parse table rows for full card data using the detected column map
+    const rawCards = await page.$$eval("table tbody tr", (trs, cm) =>
       trs.map((tr) => {
         const cells = Array.from(tr.querySelectorAll("td"));
-        if (cells.length < 6) return null;
+        if (cells.length < 4) return null;
 
-        // Product cell (index 1): contains image, name, and number
-        const productCell = cells[1];
+        // Product cell: contains image, name, and number
+        const productCell = cells[cm.product];
         const img = productCell?.querySelector("img");
         const imageUrl = img?.getAttribute("src") || "";
         const nameEl = productCell?.querySelector("span.text-xs.truncate.font-medium");
         const name = (nameEl?.textContent || "").trim();
-        // Number + rarity hint (e.g. "22/214 • Holo")
         const numberEl = productCell?.querySelector("span.font-normal.text-muted-foreground");
         const numberText = (numberEl?.textContent || "").trim();
 
-        // Set name (index 2)
-        const setEl = cells[2]?.querySelector("span.text-xs");
+        // Set name
+        const setEl = cells[cm.set]?.querySelector("span.text-xs");
         const setName = (setEl?.textContent || "").trim();
 
-        // Rarity (index 3)
-        const rarityEl = cells[3]?.querySelector("span.text-xs");
+        // Rarity
+        const rarityEl = cells[cm.rarity]?.querySelector("span.text-xs");
         const rarity = (rarityEl?.textContent || "").trim();
 
-        // Market Price (index 4) — contains £X.XX in a purple span
-        const priceEl = cells[4]?.querySelector("span.font-mono, span.text-purple-600");
-        const priceText = priceEl?.textContent || "";
-        const priceMatch = priceText.match(/£([\d,.]+)/);
-        const price = priceMatch ? parseFloat(priceMatch[1].replace(",", "")) : 0;
-
-        // 7-Day Change — look for coloured percentage spans across multiple class variants
-        let changePct = 0;
-        const pctSelectors = [
-          "span.text-green-600", "span.text-green-500", "span.text-green-400",
-          "span.text-red-600", "span.text-red-500", "span.text-red-400",
-          "span.text-emerald-600", "span.text-emerald-500",
-        ].join(", ");
-        // Skip the price cell (index 4) — only look in cells 5+ for percentage
-        for (let ci = 5; ci < cells.length; ci++) {
-          const cell = cells[ci];
+        // Market Price — try the known price column first, then scan all cells
+        let price = 0;
+        const priceCells = cm.price >= 0 ? [cells[cm.price], ...cells] : cells;
+        for (const cell of priceCells) {
           if (!cell) continue;
-          const pctEl = cell.querySelector(pctSelectors);
-          if (pctEl) {
-            const pctText = pctEl.textContent || "";
-            const match = pctText.match(/([+-]?[\d,.]+)\s*%/);
-            if (match) {
-              changePct = parseFloat(match[1].replace(",", ""));
-              // Detect negative from red class or minus sign
-              const isRed = pctEl.className.includes("red");
-              if (isRed && changePct > 0) changePct = -changePct;
-              break;
-            }
-          }
-          // Fallback: look for any text with % in the cell
-          const cellText = cell.textContent || "";
-          const fallbackMatch = cellText.match(/([+-]?[\d,.]+)\s*%/);
-          if (fallbackMatch) {
-            changePct = parseFloat(fallbackMatch[1].replace(",", ""));
-            // Check for downward indicators
-            if (cell.querySelector('[class*="red"]') || cell.querySelector('.lucide-trending-down')) {
-              if (changePct > 0) changePct = -changePct;
-            }
+          const priceEl = cell.querySelector("span.font-mono, span.text-purple-600");
+          const priceText = priceEl?.textContent || "";
+          const priceMatch = priceText.match(/£([\d,.]+)/);
+          if (priceMatch) {
+            price = parseFloat(priceMatch[1].replace(",", ""));
             break;
           }
         }
 
-        // Calculate dollar/pound change from price and percentage
+        // Percentage change — only look in the 7-Day Change column if it exists
+        let changePct = 0;
+        const pctSelectors = "span.text-green-600, span.text-green-500, span.text-green-400, span.text-red-600, span.text-red-500, span.text-red-400, span.text-emerald-600, span.text-emerald-500";
+
+        if (cm.change7d >= 0) {
+          // We know exactly which column has the % change
+          const changeCell = cells[cm.change7d];
+          if (changeCell) {
+            const pctEl = changeCell.querySelector(pctSelectors);
+            if (pctEl) {
+              const pctText = pctEl.textContent || "";
+              const match = pctText.match(/([+-]?[\d,.]+)\s*%/);
+              if (match) {
+                changePct = parseFloat(match[1].replace(",", ""));
+                if (pctEl.className.includes("red") && changePct > 0) changePct = -changePct;
+              }
+            }
+            if (changePct === 0) {
+              const cellText = changeCell.textContent || "";
+              const fm = cellText.match(/([+-]?[\d,.]+)\s*%/);
+              if (fm) {
+                changePct = parseFloat(fm[1].replace(",", ""));
+                if (changeCell.querySelector('[class*="red"]')) {
+                  if (changePct > 0) changePct = -changePct;
+                }
+              }
+            }
+          }
+        } else {
+          // No dedicated change column — scan for any % value (fallback for unknown layouts)
+          for (let ci = 4; ci < cells.length; ci++) {
+            const cell = cells[ci];
+            if (!cell) continue;
+            const pctEl = cell.querySelector(pctSelectors);
+            if (pctEl) {
+              const pctText = pctEl.textContent || "";
+              const match = pctText.match(/([+-]?[\d,.]+)\s*%/);
+              if (match) {
+                changePct = parseFloat(match[1].replace(",", ""));
+                if (pctEl.className.includes("red") && changePct > 0) changePct = -changePct;
+                break;
+              }
+            }
+          }
+        }
+
+        // Sales volumes — read from exact column indices
+        let salesVolume7d: number | undefined;
+        let salesVolume30d: number | undefined;
+
+        if (cm.vol7d >= 0 && cells[cm.vol7d]) {
+          const spanEl = cells[cm.vol7d].querySelector("span.text-xs.font-medium, span.font-mono");
+          const text = (spanEl?.textContent || cells[cm.vol7d].textContent || "").trim();
+          const num = parseInt(text.replace(/,/g, ""));
+          if (!isNaN(num) && !/[%£$€]/.test(text)) salesVolume7d = num;
+        }
+        if (cm.vol30d >= 0 && cells[cm.vol30d]) {
+          const spanEl = cells[cm.vol30d].querySelector("span.text-xs.font-medium, span.font-mono");
+          const text = (spanEl?.textContent || cells[cm.vol30d].textContent || "").trim();
+          const num = parseInt(text.replace(/,/g, ""));
+          if (!isNaN(num) && !/[%£$€]/.test(text)) salesVolume30d = num;
+        }
+
+        // Calculate pound change from price and percentage
         const dollarChange = price > 0 && changePct !== 0
           ? price - (price / (1 + changePct / 100))
           : 0;
 
-        return { name, numberText, setName, rarity, price, changePct, dollarChange, imageUrl };
+        return { name, numberText, setName, rarity, price, changePct, dollarChange, imageUrl, salesVolume7d, salesVolume30d };
       }).filter((r): r is NonNullable<typeof r> => r !== null && r.name.length > 0)
-    );
+    , colMap);
 
     console.log(`[pokepulse] Report table: ${rawCards.length} rows`);
-    // Debug: log first few rows so we can verify % extraction
     for (const c of rawCards.slice(0, 3)) {
-      console.log(`[pokepulse]   ${c.name}: ${c.changePct}% | £${c.price.toFixed(2)} | Δ£${c.dollarChange.toFixed(2)}`);
+      console.log(`[pokepulse]   ${c.name}: ${c.changePct}% | £${c.price.toFixed(2)} | 7d vol: ${c.salesVolume7d ?? "?"} | 30d vol: ${c.salesVolume30d ?? "?"}`);
     }
 
-    // Sort by absolute % change descending (biggest movers first)
-    rawCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+    // Sort by absolute % change descending (biggest movers first) or keep original rank
+    if (sortBy === "percent") {
+      rawCards.sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+    }
 
     // Take top N and convert to CardData
     const topCards = rawCards.slice(0, topN);
@@ -485,6 +747,8 @@ export async function scrapePokePulseCards(topN = 10): Promise<CardData[]> {
       tcgPlayerUrl: "",
       imageUrl: c.imageUrl,
       currency: "£",
+      salesVolume7d: c.salesVolume7d,
+      salesVolume30d: c.salesVolume30d,
     }));
 
     const cardsWithImages = cards.filter(

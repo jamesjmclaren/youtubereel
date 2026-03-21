@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readdir } from "fs/promises";
+import { mkdir, writeFile, readdir, access } from "fs/promises";
 import { scrapeTopCards, scrapeSetCards, downloadCardImages } from "./scraper.js";
 import { generateImage, generateSlides } from "./image-generator.js";
 import type { CardData, MarketTrend } from "./types.js";
@@ -52,7 +52,11 @@ async function run(
   console.log("\n━━━ Step 1: Scraping cards ━━━");
   let cards: CardData[];
   if (preset?.source === "pokepulse") {
-    cards = await scrapePokePulseCards(config.topN);
+    // For best-seller reports, keep original rank order; for price movers, sort by %
+    const sortBy = (preset.displayMode === "sales-7d" || preset.displayMode === "sales-30d")
+      ? "rank" as const
+      : "percent" as const;
+    cards = await scrapePokePulseCards(config.topN, preset.pokepulseReport, sortBy);
   } else if (preset?.setSlug) {
     cards = await scrapeSetCards({
       setSlug: preset.setSlug,
@@ -73,15 +77,36 @@ async function run(
   cards = await downloadCardImages(cards, `${runDir}/images`);
   await writeFile(`${runDir}/cards.json`, JSON.stringify(cards, null, 2));
 
-  // Pick a random music track
+  // Pick music track — each video type gets a preferred track for variety
+  // Falls back to random if the preferred file is missing
+  const MUSIC_MAP: Record<string, string> = {
+    "pokepulse-7d-price-movers":    "music-energetic.mp3",
+    "pokepulse-weekly-best-sellers": "music-upbeat.mp3",
+    "pokepulse-monthly-best-sellers": "music-lofi.mp3",
+    "pokepulse-7d-psa10-movers":    "music-tech.mp3",
+  };
   let musicPath = "assets/music.mp3";
   try {
-    const assetFiles = await readdir("assets");
-    const mp3s = assetFiles.filter((f) => f.endsWith(".mp3"));
-    if (mp3s.length > 0) {
-      const pick = mp3s[Math.floor(Math.random() * mp3s.length)];
-      musicPath = `assets/${pick}`;
-      console.log(`Using music: ${pick}`);
+    const preferred = preset?.name ? MUSIC_MAP[preset.name] : undefined;
+    if (preferred) {
+      const preferredPath = `assets/${preferred}`;
+      try {
+        await access(preferredPath);
+        musicPath = preferredPath;
+        console.log(`Using music (matched): ${preferred}`);
+      } catch {
+        console.log(`Preferred track ${preferred} not found, picking random`);
+      }
+    }
+    // If no preferred match was used, pick randomly
+    if (musicPath === "assets/music.mp3") {
+      const assetFiles = await readdir("assets");
+      const mp3s = assetFiles.filter((f) => f.endsWith(".mp3"));
+      if (mp3s.length > 0) {
+        const pick = mp3s[Math.floor(Math.random() * mp3s.length)];
+        musicPath = `assets/${pick}`;
+        console.log(`Using music (random): ${pick}`);
+      }
     }
   } catch { /* use default */ }
 
@@ -110,18 +135,20 @@ async function run(
 
     // Slideshow: one card at a time
     console.log("\n━━━ Step 3: Generating slides ━━━");
+    const displayMode = preset?.displayMode || "price-and-percent";
     const slidePaths = await generateSlides(sortedCards, `${runDir}/slides`, {
       theme: preset?.theme || "indigo",
       title: preset?.title,
       subtitle: preset?.subtitle,
-      skipPctText: true, // FFmpeg will draw animated count-up % overlay
+      skipPctText: false, // Always bake % text into the slide image (FFmpeg drawtext is unreliable across environments)
+      displayMode,
     });
 
     // slideCards: null = intro title slide, then cards in sorted order
     const slideCards: Array<CardData | null> = [null, ...sortedCards];
 
     console.log("\n━━━ Step 4: Rendering slideshow video ━━━");
-    await renderSlideshow(slidePaths, videoPath, musicPath, duration, { slideCards });
+    await renderSlideshow(slidePaths, videoPath, musicPath, duration, { slideCards, displayMode });
   } else {
     // Grid: all cards on one image
     console.log("\n━━━ Step 3: Generating thumbnail ━━━");
@@ -143,7 +170,8 @@ async function run(
 
     // YouTube
     console.log("\n━━━ Step 5a: Uploading to YouTube ━━━");
-    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends);
+    const displayModeForUpload = preset?.displayMode || "price-and-percent";
+    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends, displayModeForUpload);
     usedTitles.push(title);
     console.log(`YouTube: ${url}`);
 
@@ -151,7 +179,7 @@ async function run(
     if (process.env.FB_PAGE_ID && process.env.FB_PAGE_ACCESS_TOKEN) {
       console.log("\n━━━ Step 5b: Uploading to Facebook ━━━");
       try {
-        const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends);
+        const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends, displayModeForUpload);
         console.log(`Facebook: ${fb.url}`);
       } catch (err) {
         console.error(`[pipeline] Facebook upload failed: ${(err as Error).message}`);
@@ -240,56 +268,82 @@ if (args.includes("--auth")) {
   }
 
   if (dualMode) {
-    // Pre-fetch market trends to inform preset selection
-    const marketTrends = await fetchMarketTrends();
-    const marketDirection = suggestDirection(marketTrends);
-
-    // Pick generic preset — if PokePulse says market is crashing, swap to a losers preset
-    let genericPreset = getPresetForToday();
-    if (marketDirection && genericPreset.direction !== marketDirection) {
-      const betterFit = CONTENT_PRESETS.find((p) => p.direction === marketDirection);
-      if (betterFit) {
-        const summary = formatMarketSummary(marketTrends);
-        console.log(`[pipeline] Market trend (${summary}) → switching to ${betterFit.name}`);
-        genericPreset = betterFit;
-      }
-    }
+    // 4 PokePulse videos per run
+    const pokepulsePresets: ContentPreset[] = [
+      {
+        name: "pokepulse-7d-price-movers",
+        title: "7-DAY PRICE MOVERS",
+        subtitle: "Top 10 Cards This Week",
+        direction: "gainers",
+        period: "7d",
+        priceFilter: "",
+        topN: 10,
+        theme: "indigo",
+        source: "pokepulse",
+        forceSlideshow: true,
+        pokepulseReport: "7-Day Price Movers - Cards",
+        displayMode: "price-and-percent",
+      },
+      {
+        name: "pokepulse-weekly-best-sellers",
+        title: "WEEKLY BEST SELLERS",
+        subtitle: "Top 10 Cards by Sales",
+        direction: "gainers",
+        period: "7d",
+        priceFilter: "",
+        topN: 10,
+        theme: "emerald",
+        source: "pokepulse",
+        forceSlideshow: true,
+        pokepulseReport: "Weekly Best Sellers - Cards",
+        displayMode: "sales-7d",
+      },
+      {
+        name: "pokepulse-monthly-best-sellers",
+        title: "MONTHLY BEST SELLERS",
+        subtitle: "Top 15 Cards by 30-Day Sales",
+        direction: "gainers",
+        period: "30d",
+        priceFilter: "",
+        topN: 15,
+        theme: "amber",
+        source: "pokepulse",
+        forceSlideshow: true,
+        pokepulseReport: "Monthly Best Sellers - Cards",
+        displayMode: "sales-30d",
+      },
+      {
+        name: "pokepulse-7d-psa10-movers",
+        title: "PSA 10 PRICE MOVERS",
+        subtitle: "Top 10 Graded Modern Era",
+        direction: "gainers",
+        period: "7d",
+        priceFilter: "",
+        topN: 10,
+        theme: "crimson",
+        source: "pokepulse",
+        forceSlideshow: true,
+        pokepulseReport: "7-Day Price Movers - PSA 10 Graded",
+        displayMode: "price-and-percent",
+      },
+    ];
 
     let failures = 0;
 
-    console.log("═══ DUAL MODE: 2 videos tonight ═══");
+    console.log(`═══ POKEPULSE MODE: ${pokepulsePresets.length} videos tonight ═══`);
 
-    console.log("\n── Video 1: Generic ──");
-    try {
-      await runPreset(genericPreset);
-    } catch (err) {
-      console.error(`[pipeline] Generic video failed: ${(err as Error).message}`);
-      failures++;
+    for (let i = 0; i < pokepulsePresets.length; i++) {
+      const preset = pokepulsePresets[i];
+      console.log(`\n── Video ${i + 1}: ${preset.title} ──`);
+      try {
+        await runPreset(preset);
+      } catch (err) {
+        console.error(`[pipeline] Video ${i + 1} failed: ${(err as Error).message}`);
+        failures++;
+      }
     }
 
-    // Video 2: PokePulse UK market movers — 10 cards, slideshow style
-    const pokepulsePreset: ContentPreset = {
-      name: "pokepulse-uk-movers",
-      title: "UK MARKET MOVERS",
-      subtitle: "Top movers from PulseTCG UK",
-      direction: "gainers",
-      period: "7d",
-      priceFilter: "",
-      topN: 10,
-      theme: "emerald",
-      source: "pokepulse",
-      forceSlideshow: true,
-    };
-
-    console.log(`\n── Video 2: ${pokepulsePreset.title} ──`);
-    try {
-      await runPreset(pokepulsePreset);
-    } catch (err) {
-      console.error(`[pipeline] PokePulse video failed: ${(err as Error).message}`);
-      failures++;
-    }
-
-    if (failures === 2) {
+    if (failures === pokepulsePresets.length) {
       process.exit(1);
     }
   } else {

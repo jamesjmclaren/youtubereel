@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import { readFile, writeFile } from "fs/promises";
 import { createReadStream } from "fs";
-import type { CardData, MarketTrend } from "./types.js";
+import type { CardData, MarketTrend, SlideDisplayMode } from "./types.js";
 
 const SCOPES = ["https://www.googleapis.com/auth/youtube.upload"];
 const TOKEN_PATH = "tokens.json";
@@ -82,7 +82,8 @@ async function getAuthenticatedClient() {
 function generateTitle(
   cards: CardData[],
   period: string,
-  excludeTitles: string[] = []
+  excludeTitles: string[] = [],
+  displayMode: SlideDisplayMode = "price-and-percent"
 ): string {
   const periodLabel =
     period === "24h"
@@ -98,22 +99,38 @@ function generateTitle(
   const setName = topCard.setName || "";
   const hasSet = setName.length > 0;
 
-  const titles = [
-    `${topCard.name} Up ${topChange}! Pokémon Card Gainers ${periodLabel} #Shorts`,
-    `Pokémon Cards EXPLODING in Price ${periodLabel} 📈 #Shorts`,
-    `These Pokémon Cards Are SKYROCKETING ${periodLabel}! 🚀 #Shorts`,
-    `${topCard.name} ${topChange} — Don't Sleep on These Cards! #Shorts`,
-    `Pokémon Cards You NEED Before They Moon 🌙 ${periodLabel} #Shorts`,
-    `${topChange} in ${periodLabel}?! ${topCard.name} Is Moving 📈 #Shorts`,
-    `Who Saw ${topCard.name} Coming? ${topChange} ${periodLabel} 🔥 #Shorts`,
-    `The Pokémon Cards Nobody's Talking About ${periodLabel} #Shorts`,
-    ...(hasSet
-      ? [
-          `${setName} Cards Are POPPING OFF ${periodLabel} 🔥 #Shorts`,
-          `Best ${setName} Pulls to Invest In Right Now #Shorts`,
-        ]
-      : []),
-  ];
+  let titles: string[];
+
+  if (displayMode === "sales-7d" || displayMode === "sales-30d") {
+    const salesLabel = displayMode === "sales-7d" ? "This Week" : "This Month";
+    titles = [
+      `The Most WANTED Pokémon Cards ${salesLabel} 🔥 #Shorts`,
+      `Everyone Is Buying These Pokémon Cards ${salesLabel}! #Shorts`,
+      `Top Selling Pokémon Cards ${salesLabel} 📈 #Shorts`,
+      `These Pokémon Cards Are FLYING Off Shelves ${salesLabel}! 🚀 #Shorts`,
+      `Best Selling Pokémon Cards Right Now ${salesLabel} #Shorts`,
+      `${topCard.name} Is The #1 Seller ${salesLabel}! #Shorts`,
+      `Pokémon Cards Everyone Wants ${salesLabel} 🔥 #Shorts`,
+      `You Won't Believe What's Selling ${salesLabel}! #Shorts`,
+    ];
+  } else {
+    titles = [
+      `${topCard.name} Up ${topChange}! Pokémon Card Gainers ${periodLabel} #Shorts`,
+      `Pokémon Cards EXPLODING in Price ${periodLabel} 📈 #Shorts`,
+      `These Pokémon Cards Are SKYROCKETING ${periodLabel}! 🚀 #Shorts`,
+      `${topCard.name} ${topChange} — Don't Sleep on These Cards! #Shorts`,
+      `Pokémon Cards You NEED Before They Moon 🌙 ${periodLabel} #Shorts`,
+      `${topChange} in ${periodLabel}?! ${topCard.name} Is Moving 📈 #Shorts`,
+      `Who Saw ${topCard.name} Coming? ${topChange} ${periodLabel} 🔥 #Shorts`,
+      `The Pokémon Cards Nobody's Talking About ${periodLabel} #Shorts`,
+      ...(hasSet
+        ? [
+            `${setName} Cards Are POPPING OFF ${periodLabel} 🔥 #Shorts`,
+            `Best ${setName} Pulls to Invest In Right Now #Shorts`,
+          ]
+        : []),
+    ];
+  }
 
   // Filter out previously used titles to avoid duplicates in multi-video runs
   const available = titles.filter((t) => !excludeTitles.includes(t));
@@ -125,12 +142,19 @@ function generateTitle(
 function generateDescription(
   cards: CardData[],
   period: string,
-  marketTrends?: MarketTrend[]
+  marketTrends?: MarketTrend[],
+  displayMode: SlideDisplayMode = "price-and-percent"
 ): string {
-  const lines = [
-    `Top 5 Pokémon cards with the biggest price increases (${period}).`,
-    "",
-  ];
+  let intro: string;
+  if (displayMode === "sales-7d") {
+    intro = `Top ${cards.length} best selling Pokémon cards this week.`;
+  } else if (displayMode === "sales-30d") {
+    intro = `Top ${cards.length} best selling Pokémon cards this month.`;
+  } else {
+    intro = `Top ${cards.length} Pokémon cards with the biggest price increases (${period}).`;
+  }
+
+  const lines = [intro, ""];
 
   // Add market trend context if available
   if (marketTrends && marketTrends.length > 0) {
@@ -142,14 +166,34 @@ function generateDescription(
     lines.push("");
   }
 
+  lines.push("📊 Rankings:");
+  if (displayMode === "sales-7d") {
+    lines.push(
+      ...cards.map((c) => {
+        const cur = c.currency || "$";
+        return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (${c.salesVolume7d ?? 0} sold)`;
+      })
+    );
+  } else if (displayMode === "sales-30d") {
+    lines.push(
+      ...cards.map((c) => {
+        const cur = c.currency || "$";
+        return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (${c.salesVolume30d ?? 0} sold)`;
+      })
+    );
+  } else {
+    lines.push(
+      ...cards.map((c) => {
+        const cur = c.currency || "$";
+        const sign = c.percentChange >= 0 ? "+" : "";
+        return `#${c.rank} ${c.name} — ${cur}${c.price.toFixed(2)} (${sign}${c.percentChange.toFixed(0)}%)`;
+      })
+    );
+  }
+
   lines.push(
-    "📊 Rankings:",
-    ...cards.map(
-      (c) =>
-        `#${c.rank} ${c.name} — $${c.price.toFixed(2)} (+${c.percentChange.toFixed(0)}%)`
-    ),
     "",
-    "Data from TCG Market News & PokePulse • Prices from TCGPlayer",
+    "Pokemon TCG Price Watch",
     "",
     "#Pokemon #PokemonTCG #PokemonCards #TCG #Investing #PriceWatch #Shorts"
   );
@@ -162,13 +206,14 @@ export async function uploadToYouTube(
   cards: CardData[],
   period: string,
   excludeTitles: string[] = [],
-  marketTrends?: MarketTrend[]
+  marketTrends?: MarketTrend[],
+  displayMode: SlideDisplayMode = "price-and-percent"
 ): Promise<{ url: string; title: string }> {
   const auth = await getAuthenticatedClient();
   const youtube = google.youtube({ version: "v3", auth });
 
-  const title = generateTitle(cards, period, excludeTitles);
-  const description = generateDescription(cards, period, marketTrends);
+  const title = generateTitle(cards, period, excludeTitles, displayMode);
+  const description = generateDescription(cards, period, marketTrends, displayMode);
 
   console.log(`[uploader] Uploading: ${title}`);
 
