@@ -293,10 +293,16 @@ export async function scrapeMarketTrends(): Promise<MarketTrend[]> {
       const marketTrends = await parseMarketReports(page);
       reportTrends.push(...marketTrends);
 
-      // Try clicking into the first report to get detailed table data
-      const reportLink = page.locator('a[href*="/market/analysis"]').first();
-      if ((await reportLink.count()) > 0) {
-        await reportLink.click();
+      // Try clicking into the first report card to get detailed table data
+      const firstReportH3 = page.locator("h3").first();
+      if ((await firstReportH3.count()) > 0) {
+        await firstReportH3.evaluate((el) => {
+          let target: HTMLElement | null = el as HTMLElement;
+          while (target && !target.classList.contains("cursor-pointer")) {
+            target = target.parentElement;
+          }
+          (target || el as HTMLElement).click();
+        });
         await page.waitForLoadState("networkidle");
         await page.waitForTimeout(2000);
         const tableTrends = await parseReportTable(page);
@@ -383,118 +389,95 @@ export async function scrapePokePulseCards(
     await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
     await page.waitForTimeout(3000);
 
-    // Debug: dump the current URL and page structure to understand the market page
     console.log(`[pokepulse] Current URL: ${page.url()}`);
 
-    // Dump ALL links on the page to find the right selector
-    const allLinks = await page.$$eval("a[href]", (links) =>
-      links.map(l => ({
-        href: l.getAttribute("href") || "",
-        text: (l.textContent || "").trim().slice(0, 100),
-      })).filter(l => l.href.includes("market") || l.href.includes("analysis") || l.href.includes("report"))
-    );
-    console.log(`[pokepulse] Market-related links on page (${allLinks.length}):`);
-    for (const link of allLinks) {
-      console.log(`[pokepulse]   href="${link.href}" text="${link.text}"`);
-    }
+    // PokePulse /market page renders reports as clickable <div> cards (not <a> links).
+    // Each card has an <h3> with the report title. We find the right card by matching
+    // the h3 text, then click the card's cursor-pointer ancestor to trigger SPA navigation.
 
-    // Also dump headings and card-like sections to understand the page layout
-    const headings = await page.$$eval("h1, h2, h3, h4, h5, h6", (els) =>
-      els.map(el => ({ tag: el.tagName, text: (el.textContent || "").trim().slice(0, 100) }))
-    );
-    console.log(`[pokepulse] Headings on page:`);
-    for (const h of headings) {
-      console.log(`[pokepulse]   <${h.tag.toLowerCase()}> ${h.text}`);
-    }
-
-    // Try multiple selectors for report links
-    const reportSelectors = [
-      'a[href*="/market/analysis"]',
-      'a[href*="reportId"]',
-      'a[href*="/market/"]',
-      'a[href*="analysis"]',
-      'a[href*="report"]',
-    ];
-
-    let reportLinks: Awaited<ReturnType<typeof page.$$>> = [];
-    let usedSelector = "";
-    for (const sel of reportSelectors) {
-      const links = await page.$$(sel);
-      if (links.length > 0) {
-        reportLinks = links;
-        usedSelector = sel;
-        console.log(`[pokepulse] Found ${links.length} links with selector: ${sel}`);
-        break;
+    // Collect all report card titles from h3 elements
+    const reportHeadings = await page.$$("h3");
+    const reportCards: Array<{ heading: typeof reportHeadings[0]; text: string }> = [];
+    for (const h3 of reportHeadings) {
+      const text = ((await h3.textContent()) || "").trim();
+      if (text.length > 0) {
+        reportCards.push({ heading: h3, text });
       }
     }
-
-    if (reportLinks.length === 0) {
-      // Last resort: look for any clickable elements with report-related text
-      console.log(`[pokepulse] No report links found with standard selectors, searching by text...`);
-      const textMatches = await page.$$('a, button, [role="link"], [role="button"]');
-      for (const el of textMatches) {
-        const text = ((await el.textContent()) || "").trim().toLowerCase();
-        if (text.includes("price mover") || text.includes("best seller") || text.includes("psa")) {
-          reportLinks.push(el);
-          console.log(`[pokepulse] Found text-match element: "${text.slice(0, 80)}"`);
-        }
-      }
+    console.log(`[pokepulse] Found ${reportCards.length} h3 headings on /market:`);
+    for (const rc of reportCards) {
+      console.log(`[pokepulse]   "${rc.text}"`);
     }
 
-    // Log all found report links
-    console.log(`[pokepulse] Report links found: ${reportLinks.length} (selector: ${usedSelector || "text-match"})`);
-    for (let i = 0; i < Math.min(reportLinks.length, 20); i++) {
-      const href = await reportLinks[i].getAttribute("href");
-      const text = ((await reportLinks[i].textContent()) || "").trim().slice(0, 100);
-      console.log(`[pokepulse]   [${i}] href="${href}" text="${text}"`);
-    }
-
-    // Find and click the matching report
+    // Find and click the matching report card
     let navigatedToReport = false;
-    if (reportName && reportLinks.length > 0) {
+    if (reportName && reportCards.length > 0) {
       console.log(`[pokepulse] Looking for report: "${reportName}"`);
-      // Exact substring match first
-      for (const link of reportLinks) {
-        const text = ((await link.textContent()) || "").trim();
-        if (text.toLowerCase().includes(reportName.toLowerCase())) {
-          console.log(`[pokepulse] Found matching report: "${text}"`);
-          await link.click();
-          navigatedToReport = true;
-          break;
-        }
-      }
-      // Partial keyword match
-      if (!navigatedToReport) {
+
+      // Substring match: preset name "7-Day Price Movers - Cards" matches h3 "7-Day Price Movers - Cards (Top 50)"
+      let matchedCard = reportCards.find(rc =>
+        rc.text.toLowerCase().includes(reportName.toLowerCase())
+      );
+
+      // Fallback: keyword match
+      if (!matchedCard) {
         const keywords = reportName.toLowerCase().split(/[\s-]+/).filter(w => w.length > 2);
-        for (const link of reportLinks) {
-          const text = ((await link.textContent()) || "").toLowerCase();
-          const matchCount = keywords.filter(kw => text.includes(kw)).length;
-          if (matchCount >= Math.ceil(keywords.length * 0.4)) {
-            console.log(`[pokepulse] Partial match (${matchCount}/${keywords.length} keywords): "${text.slice(0, 80)}"`);
-            await link.click();
-            navigatedToReport = true;
-            break;
-          }
-        }
+        matchedCard = reportCards.find(rc => {
+          const t = rc.text.toLowerCase();
+          const hits = keywords.filter(kw => t.includes(kw)).length;
+          return hits >= Math.ceil(keywords.length * 0.5);
+        });
       }
-      if (!navigatedToReport) {
-        console.warn(`[pokepulse] Report "${reportName}" not found among ${reportLinks.length} links`);
-        // Fall back to first report link
-        if (reportLinks.length > 0) {
-          const fallbackText = ((await reportLinks[0].textContent()) || "").trim();
-          console.log(`[pokepulse] Falling back to first report: "${fallbackText.slice(0, 80)}"`);
-          await reportLinks[0].click();
+
+      if (matchedCard) {
+        console.log(`[pokepulse] Matched report card: "${matchedCard.text}"`);
+        // Click the closest ancestor with cursor-pointer (the card container), or the h3 itself
+        const clicked = await matchedCard.heading.evaluate((el) => {
+          let target: HTMLElement | null = el as HTMLElement;
+          // Walk up to find the clickable card container
+          while (target && !target.classList.contains("cursor-pointer")) {
+            target = target.parentElement;
+          }
+          if (target) {
+            target.click();
+            return true;
+          }
+          // Fallback: click the h3 itself
+          (el as HTMLElement).click();
+          return true;
+        });
+        if (clicked) navigatedToReport = true;
+      } else {
+        console.warn(`[pokepulse] Report "${reportName}" not found. Available: ${reportCards.map(rc => rc.text).join(", ")}`);
+        // Fall back to first report card
+        if (reportCards.length > 0) {
+          console.log(`[pokepulse] Falling back to first report: "${reportCards[0].text}"`);
+          await reportCards[0].heading.evaluate((el) => {
+            let target: HTMLElement | null = el as HTMLElement;
+            while (target && !target.classList.contains("cursor-pointer")) {
+              target = target.parentElement;
+            }
+            (target || el as HTMLElement).click();
+          });
           navigatedToReport = true;
         }
       }
-    } else if (reportLinks.length > 0) {
-      await reportLinks[0].click();
+    } else if (reportCards.length > 0) {
+      // No specific report requested — click first one
+      await reportCards[0].heading.evaluate((el) => {
+        let target: HTMLElement | null = el as HTMLElement;
+        while (target && !target.classList.contains("cursor-pointer")) {
+          target = target.parentElement;
+        }
+        (target || el as HTMLElement).click();
+      });
       navigatedToReport = true;
     }
 
     if (navigatedToReport) {
+      // Wait for SPA navigation to the report detail page
       await page.waitForLoadState("networkidle");
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
     }
 
     console.log(`[pokepulse] After navigation URL: ${page.url()}`);
