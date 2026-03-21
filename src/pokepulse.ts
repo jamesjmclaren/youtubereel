@@ -556,15 +556,37 @@ export async function scrapePokePulseCards(
     }
 
     // Build column index map from headers
+    // Note: "price" must match "market price" but NOT "price chart", so use "market price" first
+    // Headers may contain extra whitespace or differ in casing — all are lowercased above
     const colMap = {
       product: columnHeaders.find(h => h.text.includes("product"))?.index ?? 1,
       set: columnHeaders.find(h => h.text === "set")?.index ?? 2,
       rarity: columnHeaders.find(h => h.text.includes("rarity"))?.index ?? 3,
-      price: columnHeaders.find(h => h.text.includes("market price") || h.text.includes("price"))?.index ?? 4,
-      change7d: columnHeaders.find(h => h.text.includes("change"))?.index ?? -1,  // -1 = not present
+      price: columnHeaders.find(h => h.text.includes("market price") || (h.text.includes("price") && !h.text.includes("chart")))?.index ?? 4,
+      change7d: columnHeaders.find(h => h.text.includes("change") || h.text.includes("7-day %") || h.text.includes("7d %"))?.index ?? -1,  // -1 = not present
       vol7d: columnHeaders.find(h => h.text.includes("7-day vol") || h.text.includes("7d vol") || h.text.includes("7-day volume"))?.index ?? -1,
       vol30d: columnHeaders.find(h => h.text.includes("30-day vol") || h.text.includes("30d vol") || h.text.includes("30-day volume"))?.index ?? -1,
     };
+
+    // Fallback: if change column not found by header, detect it from first row content
+    // (look for a cell containing a colored % span like +126.6%)
+    if (colMap.change7d === -1) {
+      const changeColIdx = await page.$$eval("table tbody tr:first-child td", (cells) => {
+        for (let i = 4; i < cells.length; i++) {
+          const pctEl = cells[i].querySelector(
+            "span.text-green-600, span.text-green-500, span.text-red-600, span.text-red-500"
+          );
+          if (pctEl && /[+-]?[\d,.]+\s*%/.test(pctEl.textContent || "")) {
+            return i;
+          }
+        }
+        return -1;
+      });
+      if (changeColIdx >= 0) {
+        colMap.change7d = changeColIdx;
+        console.log(`[pokepulse] Detected change column from cell content at index ${changeColIdx}`);
+      }
+    }
 
     // Fallback: if vol columns not found by header text, use last two numeric columns
     if (colMap.vol7d === -1 || colMap.vol30d === -1) {
