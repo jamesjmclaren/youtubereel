@@ -119,7 +119,7 @@ async function run(
       theme: preset?.theme || "indigo",
       title: preset?.title,
       subtitle: preset?.subtitle,
-      skipPctText: displayMode === "price-and-percent", // FFmpeg draws animated count-up % only for price-and-percent mode
+      skipPctText: false, // Always bake % text into the slide image (FFmpeg drawtext is unreliable across environments)
       displayMode,
     });
 

@@ -211,17 +211,8 @@ export async function renderSlideshow(
     const card = slideCards?.[i] ?? null;
     let prep = `[${i}:v]scale=${WIDTH}:${HEIGHT}:flags=lanczos,fps=${FPS},setpts=PTS-STARTPTS`;
 
-    if (card !== null && displayMode === "price-and-percent") {
-      const pct = Math.round(Math.abs(card.percentChange));
-      const isPos = card.percentChange >= 0;
-      const sign = isPos ? "+" : "-";
-      const color = isPos ? "0x34d399FF" : "0xf87171FF";
-      const dur = durations[i];
-      // Count-up: floor(pct * min(1, t/dur)) — integer steps, holds at pct when t >= dur
-      const countExpr = `floor(${pct}*min(1\\,t/${dur}))`;
-      const textVal = `${sign}%{eif\\:${countExpr}\\:d\\:0}%%`;
-      prep += `,drawtext=x=(w-tw)/2:y=1065:fontsize=115:fontcolor=${color}${fontArg}:text='${textVal}'`;
-    }
+    // % text is now baked directly into the slide images by the image generator
+    // (previously used FFmpeg drawtext count-up animation, but it was unreliable)
 
     filterParts.push(`${prep}[v${i}]`);
   }
