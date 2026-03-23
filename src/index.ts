@@ -38,11 +38,17 @@ async function fetchMarketTrends(): Promise<MarketTrend[]> {
   return cachedMarketTrends;
 }
 
+interface UploadOptions {
+  youtube: boolean;
+  facebook: boolean;
+}
+
 async function run(
   config: PipelineConfig,
   preset: ContentPreset | null,
-  skipUpload = false
+  uploadOpts: UploadOptions = { youtube: true, facebook: true }
 ) {
+  const skipUpload = !uploadOpts.youtube && !uploadOpts.facebook;
   const timestamp = new Date().toISOString().slice(0, 10);
   const presetName = preset?.name || "custom";
   const runDir = `${config.outputDir}/${timestamp}-${presetName}`;
@@ -167,16 +173,20 @@ async function run(
   // Step 5: Upload
   if (!skipUpload) {
     const marketTrends = await fetchMarketTrends();
+    const displayModeForUpload = preset?.displayMode || "price-and-percent";
 
     // YouTube
-    console.log("\n━━━ Step 5a: Uploading to YouTube ━━━");
-    const displayModeForUpload = preset?.displayMode || "price-and-percent";
-    const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends, displayModeForUpload);
-    usedTitles.push(title);
-    console.log(`YouTube: ${url}`);
+    if (uploadOpts.youtube) {
+      console.log("\n━━━ Step 5a: Uploading to YouTube ━━━");
+      const { url, title } = await uploadToYouTube(videoPath, cards, config.period, usedTitles, marketTrends, displayModeForUpload);
+      usedTitles.push(title);
+      console.log(`YouTube: ${url}`);
+    } else {
+      console.log("\n━━━ Step 5a: Skipped YouTube (disabled) ━━━");
+    }
 
-    // Facebook Reels (optional — only if credentials are set)
-    if (process.env.FB_PAGE_ID && process.env.FB_PAGE_ACCESS_TOKEN) {
+    // Facebook Reels
+    if (uploadOpts.facebook && process.env.FB_PAGE_ID && process.env.FB_PAGE_ACCESS_TOKEN) {
       console.log("\n━━━ Step 5b: Uploading to Facebook ━━━");
       try {
         const fb = await uploadToFacebook(videoPath, cards, config.period, marketTrends, displayModeForUpload);
@@ -184,6 +194,8 @@ async function run(
       } catch (err) {
         console.error(`[pipeline] Facebook upload failed: ${(err as Error).message}`);
       }
+    } else if (!uploadOpts.facebook) {
+      console.log("\n━━━ Step 5b: Skipped Facebook (disabled) ━━━");
     } else {
       console.log("\n━━━ Step 5b: Skipped Facebook (no credentials) ━━━");
     }
@@ -225,7 +237,12 @@ if (args.includes("--auth")) {
   const today = await getPresetForTodayWithSets();
   console.log(`Today's auto-pick: ${today.name}`);
 } else {
-  const skipUpload = args.includes("--no-upload");
+  const noUpload = args.includes("--no-upload");
+  const noYoutube = args.includes("--no-youtube");
+  const noFacebook = args.includes("--no-facebook");
+  const uploadOpts: UploadOptions = noUpload
+    ? { youtube: false, facebook: false }
+    : { youtube: !noYoutube, facebook: !noFacebook };
   const dualMode = args.includes("--dual");
 
   async function resolvePreset(name?: string): Promise<ContentPreset> {
@@ -262,9 +279,9 @@ if (args.includes("--auth")) {
     console.log(`   Preset: ${preset.name}`);
     console.log(`   Title:  ${preset.title}`);
     console.log(`   ${config.direction} | ${config.period} | price: ${config.priceFilter || "all"} | top ${config.topN} | theme: ${preset.theme}`);
-    console.log(`   Upload: ${!skipUpload}`);
+    console.log(`   YouTube: ${uploadOpts.youtube} | Facebook: ${uploadOpts.facebook}`);
 
-    await run(config, preset, skipUpload);
+    await run(config, preset, uploadOpts);
   }
 
   if (dualMode) {
