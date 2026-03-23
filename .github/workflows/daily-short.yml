@@ -19,11 +19,16 @@ on:
           - daily-hot
           - monthly-drops
           - weekly-movers-all
-      skip_upload:
-        description: "Skip YouTube upload (dry run)"
+      upload_youtube:
+        description: "Upload to YouTube"
         required: false
         type: boolean
-        default: false
+        default: true
+      upload_facebook:
+        description: "Upload to Facebook Reels"
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   generate-and-upload:
@@ -67,8 +72,11 @@ jobs:
           else
             ARGS="--dual"
           fi
-          if [ "${{ inputs.skip_upload }}" = "true" ]; then
-            ARGS="$ARGS --no-upload"
+          if [ "${{ inputs.upload_youtube }}" = "false" ]; then
+            ARGS="$ARGS --no-youtube"
+          fi
+          if [ "${{ inputs.upload_facebook }}" = "false" ]; then
+            ARGS="$ARGS --no-facebook"
           fi
           node --env-file=.env --import tsx/esm src/index.ts $ARGS
 
