@@ -55,20 +55,9 @@ export async function exchangeCode(code: string): Promise<void> {
 async function getAuthenticatedClient() {
   const oauth2Client = getOAuth2Client();
 
+  let tokenData: string;
   try {
-    const tokenData = await readFile(TOKEN_PATH, "utf-8");
-    const tokens = JSON.parse(tokenData) as StoredTokens;
-    oauth2Client.setCredentials(tokens);
-
-    // Refresh if expired
-    if (tokens.expiry_date && Date.now() >= tokens.expiry_date) {
-      console.log("[uploader] Refreshing expired token...");
-      const { credentials } = await oauth2Client.refreshAccessToken();
-      oauth2Client.setCredentials(credentials);
-      await writeFile(TOKEN_PATH, JSON.stringify(credentials, null, 2));
-    }
-
-    return oauth2Client;
+    tokenData = await readFile(TOKEN_PATH, "utf-8");
   } catch {
     throw new Error(
       "No saved tokens found. Run the auth flow first:\n" +
@@ -77,6 +66,30 @@ async function getAuthenticatedClient() {
         "  3. Run: npm run start -- --code YOUR_CODE"
     );
   }
+
+  const tokens = JSON.parse(tokenData) as StoredTokens;
+  oauth2Client.setCredentials(tokens);
+
+  // Refresh if expired
+  if (tokens.expiry_date && Date.now() >= tokens.expiry_date) {
+    console.log("[uploader] Refreshing expired token...");
+    try {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      oauth2Client.setCredentials(credentials);
+      await writeFile(TOKEN_PATH, JSON.stringify(credentials, null, 2));
+    } catch (err) {
+      throw new Error(
+        `Failed to refresh YouTube token: ${err instanceof Error ? err.message : err}\n` +
+          "This can happen if your Google Cloud app is in 'Testing' mode (tokens expire after 7 days).\n" +
+          "Fix: publish the app in Google Cloud Console, then re-auth:\n" +
+          "  1. Run: npm run start -- --auth\n" +
+          "  2. Visit the URL and authorize\n" +
+          "  3. Run: npm run start -- --code YOUR_CODE"
+      );
+    }
+  }
+
+  return oauth2Client;
 }
 
 function generateTitle(

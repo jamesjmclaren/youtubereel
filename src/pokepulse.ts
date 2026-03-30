@@ -31,8 +31,9 @@ function getCredentials(): { email: string; password: string } {
  * then fill email + password in the sign-in tab.
  */
 async function login(page: Page, email: string, password: string): Promise<void> {
-  // Go to homepage first
-  await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: 20_000 });
+  // Go to homepage first (use domcontentloaded — the SPA polls for live data so networkidle may never fire)
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.waitForTimeout(3000);
 
   // Dismiss cookie consent overlay if present (it blocks clicks on the page)
   try {
@@ -278,7 +279,7 @@ export async function scrapeMarketTrends(): Promise<MarketTrend[]> {
 
     // Parse homepage data (available even without login, but login gives full access)
     console.log("[pokepulse] Parsing homepage market data…");
-    await page.goto(BASE_URL, { waitUntil: "networkidle", timeout: 20_000 });
+    await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForTimeout(2000);
 
     const homepageTrends = await parseHomepageCards(page);
@@ -288,7 +289,7 @@ export async function scrapeMarketTrends(): Promise<MarketTrend[]> {
     const marketUrl = `${BASE_URL}/market`;
     console.log(`[pokepulse] Fetching: ${marketUrl}`);
     try {
-      await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
+      await page.goto(marketUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
       await page.waitForTimeout(2000);
       const marketTrends = await parseMarketReports(page);
       reportTrends.push(...marketTrends);
@@ -303,7 +304,8 @@ export async function scrapeMarketTrends(): Promise<MarketTrend[]> {
           }
           (target || el as HTMLElement).click();
         });
-        await page.waitForLoadState("networkidle");
+        await page.waitForLoadState("domcontentloaded");
+      await page.waitForTimeout(3000);
         await page.waitForTimeout(2000);
         const tableTrends = await parseReportTable(page);
         console.log(`[pokepulse] Report table: ${tableTrends.length} items`);
@@ -386,7 +388,7 @@ export async function scrapePokePulseCards(
     // Navigate to the market page to find reports
     const marketUrl = `${BASE_URL}/market`;
     console.log(`[pokepulse] Navigating to ${marketUrl}`);
-    await page.goto(marketUrl, { waitUntil: "networkidle", timeout: 20_000 });
+    await page.goto(marketUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForTimeout(3000);
 
     console.log(`[pokepulse] Current URL: ${page.url()}`);
@@ -476,7 +478,8 @@ export async function scrapePokePulseCards(
 
     if (navigatedToReport) {
       // Wait for SPA navigation to the report detail page
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForTimeout(3000);
       await page.waitForTimeout(3000);
     }
 
